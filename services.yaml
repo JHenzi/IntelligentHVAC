@@ -1,0 +1,12 @@
+# Services for Intelligent HVAC integration
+force_update:
+  name: Force Update
+  description: Manually trigger a data update for the thermal model
+  fields:
+    entry_id:
+      name: Entry ID
+      description: The config entry ID to update (optional, updates all if not specified)
+      required: false
+      selector:
+        text:
+
