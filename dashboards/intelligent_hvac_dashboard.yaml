@@ -1,0 +1,254 @@
+# Intelligent HVAC dashboard — built-in cards only (no HACS cards needed).
+# Requires packages/intelligent_hvac_comfort.yaml. See dashboards/README.md.
+views:
+- title: Smart Recovery HVAC Control
+  path: smart-recovery
+  icon: mdi:thermostat
+  cards:
+  - type: markdown
+    content: "## \U0001F3E0 Smart Recovery HVAC System\n**Model Status:** {{ states('sensor.intelligent_hvac_thermal_model_status')\
+      \ }} | \n**Confidence:** {{ states('sensor.intelligent_hvac_thermal_model_confidence') }}%\n**Advice:** {{ state_attr('sensor.intelligent_hvac_cooling_strategy',\
+      \ 'guidance_message') }}"
+  - type: markdown
+    content: '## 📊 Temperature History
+
+      '
+  - type: history-graph
+    title: Indoor & Outdoor Temperatures (24h)
+    hours_to_show: 24
+    refresh_interval: 60
+    entities:
+    - entity: climate.thermostat
+      name: Indoor Temp
+    - entity: sensor.outdoor_temperature_most_recent
+      name: Outdoor Temp
+    - entity: climate.thermostat
+      name: Setpoint
+  - type: history-graph
+    title: Time to Heat
+    hours_to_show: 24
+    refresh_interval: 60
+    entities:
+    - entity: sensor.intelligent_hvac_time_to_target_5degf_heat
+    - entity: sensor.intelligent_hvac_time_to_target_5degf_cool
+  - type: history-graph
+    title: Recovery Time Trend (7 days)
+    hours_to_show: 168
+    refresh_interval: 300
+    entities:
+    - entity: sensor.intelligent_hvac_time_to_target_5degf_heat
+      name: Time to Target 5°F
+  - type: vertical-stack
+    cards:
+    - type: entities
+      title: ⏰ Wake-up Time Settings
+      entities:
+      - entity: input_datetime.target_wake_up_time
+        name: Target Wake-up Time
+        icon: mdi:alarm
+      - entity: input_datetime.smart_recovery_start_time
+        name: Recovery Start Time
+        icon: mdi:clock-start
+        secondary_info: last-updated
+    - type: entities
+      title: 🎯 Target Settings
+      entities:
+      - entity: input_number.target_temperature
+        name: Target Temperature
+        icon: mdi:thermometer
+      - entity: input_number.recovery_time_buffer
+        name: Safety Buffer (minutes)
+        icon: mdi:timer-outline
+    - type: entities
+      entities:
+      - entity: sensor.intelligent_hvac_recommended_cooling_setpoint
+      title: Cooling
+      state_color: true
+      show_header_toggle: false
+  - type: markdown
+    content: '## ⏱️ Recovery Time Calculations
+
+      '
+  - type: horizontal-stack
+    cards:
+    - type: gauge
+      entity: input_number.current_recovery_time
+      name: Base Recovery Time
+      min: 0
+      max: 300
+      severity:
+        green: 0
+        yellow: 120
+        red: 200
+      tap_action:
+        action: call-service
+        service: script.intelligent_hvac_update_recovery
+    - type: gauge
+      entity: input_number.temperature_delta
+      name: Temp Delta Needed
+      min: 0
+      max: 20
+      severity:
+        green: 0
+        yellow: 8
+        red: 15
+    - type: gauge
+      entity: input_number.scaled_recovery_time
+      name: Scaled Recovery Time
+      min: 0
+      max: 300
+      severity:
+        green: 0
+        yellow: 120
+        red: 200
+  - type: vertical-stack
+    cards:
+    - type: entities
+      title: 🏠 HVAC Status
+      entities:
+      - entity: climate.thermostat
+        name: HVAC Mode
+      - entity: climate.thermostat
+        name: HVAC Action
+      - entity: climate.thermostat
+        name: Current Temperature
+      - entity: climate.thermostat
+        name: Setpoint
+    - type: entities
+      title: 🧠 Intelligent HVAC Model
+      entities:
+      - entity: sensor.intelligent_hvac_thermal_model_status
+        name: Model Status
+      - entity: sensor.intelligent_hvac_thermal_model_confidence
+        name: Model Confidence (%)
+      - entity: sensor.intelligent_hvac_cooling_strategy
+        name: Cooling Strategy
+      - entity: sensor.intelligent_hvac_recommended_cooling_setpoint
+        name: Recommended Cooling Setpoint
+      - entity: sensor.intelligent_hvac_cooling_holding_margin
+        name: Cooling Holding Margin
+      - entity: sensor.intelligent_hvac_pre_cool_lead_time
+        name: Pre-cool Lead Time
+      - entity: sensor.intelligent_hvac_time_to_target_5degf_cool
+        name: Time to Target 5°F Cool
+        icon: mdi:timer-outline
+      - entity: sensor.intelligent_hvac_time_to_target_5degf_heat
+        name: Time to Target 5°F Heat
+        icon: mdi:timer
+  - type: vertical-stack
+    cards:
+    - type: entities
+      title: 🌡️ Setback Temperatures
+      entities:
+      - entity: input_number.nighttime_setback_temperature
+        name: Normal Setback
+        icon: mdi:thermometer-low
+      - entity: input_number.moderate_cold_setback_temperature
+        name: Moderate Cold Setback
+        icon: mdi:thermometer-minus
+      - entity: input_number.extreme_cold_setback_temperature
+        name: Extreme Cold Setback
+        icon: mdi:thermometer-alert
+    - type: entities
+      title: ❄️ Temperature Thresholds
+      entities:
+      - entity: input_number.moderate_cold_threshold
+        name: Moderate Cold Threshold
+        icon: mdi:snowflake
+      - entity: input_number.extreme_cold_threshold
+        name: Extreme Cold Threshold
+        icon: mdi:snowflake-alert
+      - entity: sensor.outdoor_temperature_most_recent
+        name: Current Outdoor Temp
+        icon: mdi:weather-cloudy
+  - type: entities
+    title: Smart Recovery Automations
+    entities:
+    - entity: automation.set_hvac_mode_based_on_daily_forecast
+      name: Season Mode (Daily Forecast)
+    - entity: automation.intelligent_hvac_smart_cooling
+      name: Smart Cooling
+    - entity: automation.update_smart_recovery_start_time_daily
+      name: Daily Recovery Update (Midnight)
+    - entity: automation.update_recovery_values_on_change
+      name: Recovery Update on Change
+    - entity: automation.smart_recovery_morning_heat_up
+      name: Morning Heat Up
+    - entity: automation.turn_down_heat_at_night_dynamic_setback
+      name: Nighttime Setback
+  - type: horizontal-stack
+    cards:
+    - type: button
+      name: Update Recovery Now
+      tap_action:
+        action: call-service
+        service: script.intelligent_hvac_update_recovery
+      icon: mdi:refresh
+      show_icon: true
+      show_name: true
+    - type: button
+      name: Test Morning Heat
+      tap_action:
+        action: call-service
+        service: automation.trigger
+        service_data:
+          entity_id: automation.smart_recovery_morning_heat_up
+      icon: mdi:thermometer-chevron-up
+      show_icon: true
+      show_name: true
+    - type: button
+      name: Test Nighttime Setback
+      tap_action:
+        action: call-service
+        service: automation.trigger
+        service_data:
+          entity_id: automation.turn_down_heat_at_night_dynamic_setback
+      icon: mdi:thermometer-chevron-down
+      show_icon: true
+      show_name: true
+  - type: entities
+    title: 🌤️ Season Mode Thresholds
+    entities:
+    - entity: input_number.forecast_cool_above
+      name: Cool when forecast high above
+    - entity: input_number.forecast_heat_below
+      name: Heat when forecast high below
+  type: masonry
+  badges:
+  - type: entity
+    show_name: true
+    show_state: true
+    show_icon: true
+    entity: sensor.intelligent_hvac_learned_indoor_temperature
+  - type: entity
+    show_name: true
+    show_state: true
+    show_icon: true
+    entity: sensor.intelligent_hvac_recommended_cooling_setpoint
+  - type: entity
+    show_name: true
+    show_state: true
+    show_icon: true
+    entity: automation.intelligent_hvac_smart_cooling
+  - type: entity
+    show_name: true
+    show_state: true
+    show_icon: true
+    entity: automation.set_hvac_mode_based_on_daily_forecast
+  - type: entity
+    show_name: true
+    show_state: true
+    show_icon: true
+    entity: climate.thermostat
+    icon: mdi:air-filter
+    state_content:
+    - temperature
+    - current_temperature
+    name: Target vs Current
+  - type: entity
+    show_name: true
+    show_state: true
+    show_icon: true
+    entity: climate.thermostat
+    show_entity_picture: false
+    state_content: hvac_action

@@ -1,0 +1,353 @@
+# =============================================================================
+# Intelligent HVAC — Comfort Package
+# =============================================================================
+# The helpers, template sensors, script and automations that turn the learned
+# thermal model into "wake up to a warm house".
+#
+#   You set:  "I want 70°F at 7:00 AM"
+#   It does:  works out how long the house needs to recover from the nighttime
+#             setback (using the learned model) and starts heating exactly
+#             then — no earlier, no later.
+#
+# REQUIRES the Intelligent HVAC integration to be installed and configured.
+#
+# INSTALL (see packages/README.md for details):
+#   1. Enable packages in configuration.yaml:
+#        homeassistant:
+#          packages: !include_dir_named packages
+#   2. Copy this file to <config>/packages/
+#   3. Find & replace the entity IDs below if yours differ:
+#        climate.thermostat   -> your thermostat
+#        weather.home         -> your weather entity (daily forecast support)
+#        sensor.intelligent_hvac_time_to_target_5degf_heat / _cool -> Intelligent HVAC sensors
+#   4. Restart Home Assistant.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+input_datetime:
+  target_wake_up_time:
+    name: Target Wake-up Time
+    has_date: false
+    has_time: true
+    icon: mdi:alarm
+  smart_recovery_start_time:
+    name: Smart Recovery Start Time
+    has_date: false
+    has_time: true
+    icon: mdi:clock-start
+
+input_number:
+  target_temperature:
+    name: Target Temperature
+    min: 60
+    max: 80
+    step: 1
+    unit_of_measurement: "°F"
+    icon: mdi:thermometer
+  recovery_time_buffer:
+    name: Recovery Time Buffer
+    min: 0
+    max: 60
+    step: 1
+    unit_of_measurement: min
+    icon: mdi:timer-outline
+  nighttime_setback_temperature:
+    name: Nighttime Setback Temperature
+    min: 55
+    max: 75
+    step: 1
+    unit_of_measurement: "°F"
+    icon: mdi:thermometer-low
+  moderate_cold_setback_temperature:
+    name: Moderate Cold Setback Temperature
+    min: 55
+    max: 75
+    step: 1
+    unit_of_measurement: "°F"
+    icon: mdi:thermometer-minus
+  extreme_cold_setback_temperature:
+    name: Extreme Cold Setback Temperature
+    min: 55
+    max: 75
+    step: 1
+    unit_of_measurement: "°F"
+    icon: mdi:thermometer-alert
+  moderate_cold_threshold:
+    name: Moderate Cold Threshold
+    min: -20
+    max: 50
+    step: 1
+    unit_of_measurement: "°F"
+    icon: mdi:snowflake
+  extreme_cold_threshold:
+    name: Extreme Cold Threshold
+    min: -20
+    max: 40
+    step: 1
+    unit_of_measurement: "°F"
+    icon: mdi:snowflake-alert
+  forecast_cool_above:
+    name: Switch to Cool When Forecast High Above
+    min: 60
+    max: 100
+    step: 1
+    unit_of_measurement: "°F"
+    icon: mdi:snowflake
+  forecast_heat_below:
+    name: Switch to Heat When Forecast High Below
+    min: 30
+    max: 75
+    step: 1
+    unit_of_measurement: "°F"
+    icon: mdi:fire
+  # Calculated values (written by the script below; shown on the dashboard)
+  current_recovery_time:
+    name: Current Recovery Time
+    min: 0
+    max: 300
+    step: 1
+    unit_of_measurement: min
+    icon: mdi:timer
+  temperature_delta:
+    name: Temperature Delta
+    min: 0
+    max: 20
+    step: 0.5
+    unit_of_measurement: "°F"
+    icon: mdi:thermometer-chevron-up
+  scaled_recovery_time:
+    name: Scaled Recovery Time
+    min: 0
+    max: 300
+    step: 1
+    unit_of_measurement: min
+    icon: mdi:timer-sand
+
+# -----------------------------------------------------------------------------
+# Template sensors
+# -----------------------------------------------------------------------------
+template:
+  - sensor:
+      - name: Outdoor Temperature Most Recent
+        unique_id: outdoor_temperature_most_recent
+        unit_of_measurement: "°F"
+        device_class: temperature
+        state_class: measurement
+        # Prefers a dedicated outdoor sensor, falls back to your weather entity.
+        # EDIT the two entity IDs below.
+        state: >
+          {% set sensor_temp = states('sensor.my_outdoor_temperature') | float(none) %}
+          {% set weather_temp = state_attr('weather.home', 'temperature') | float(none) %}
+          {{ sensor_temp if sensor_temp is not none else weather_temp }}
+        availability: >
+          {% set sensor_temp = states('sensor.my_outdoor_temperature') | float(none) %}
+          {% set weather_temp = state_attr('weather.home', 'temperature') | float(none) %}
+          {{ sensor_temp is not none or weather_temp is not none }}
+  - binary_sensor:
+      - name: Outdoor Temperature Below Extreme Cold Threshold
+        unique_id: outdoor_temp_below_extreme_cold
+        device_class: cold
+        state: >
+          {{ states('sensor.outdoor_temperature_most_recent') | float(99)
+             < states('input_number.extreme_cold_threshold') | float(15) }}
+      - name: Outdoor Temperature Below Moderate Cold Threshold
+        unique_id: outdoor_temp_below_moderate_cold
+        device_class: cold
+        state: >
+          {{ states('sensor.outdoor_temperature_most_recent') | float(99)
+             < states('input_number.moderate_cold_threshold') | float(32) }}
+
+# -----------------------------------------------------------------------------
+# Script: the one place the recovery math lives
+# -----------------------------------------------------------------------------
+script:
+  intelligent_hvac_update_recovery:
+    alias: Intelligent HVAC - Update Recovery Calculations
+    description: >-
+      Recomputes how long recovery from tonight's setback to the target takes,
+      and the time heating must start to hit the target at wake-up.
+    mode: single
+    sequence:
+      - variables:
+          outdoor: "{{ states('sensor.outdoor_temperature_most_recent') | float(32) }}"
+          setback: >-
+            {% if outdoor < states('input_number.extreme_cold_threshold') | float(15) %}
+              {{ states('input_number.extreme_cold_setback_temperature') | float(68) }}
+            {% elif outdoor < states('input_number.moderate_cold_threshold') | float(32) %}
+              {{ states('input_number.moderate_cold_setback_temperature') | float(67) }}
+            {% else %}
+              {{ states('input_number.nighttime_setback_temperature') | float(65) }}
+            {% endif %}
+          target: "{{ states('input_number.target_temperature') | float(70) }}"
+          delta: "{{ (target | float - setback | float) | abs }}"
+          base: "{{ states('sensor.intelligent_hvac_time_to_target_5degf_heat') | float(125) }}"
+          buffer: "{{ states('input_number.recovery_time_buffer') | float(5) }}"
+          # Model gives minutes per 5°F; scale linearly to the delta we actually need.
+          scaled: >-
+            {{ ((base | float * (delta | float / 5.0)) + buffer | float) | round(0)
+               if delta | float > 0 else buffer | float }}
+          wake: >-
+            {{ states('input_datetime.target_wake_up_time')
+               if states('input_datetime.target_wake_up_time') not in ['unknown', 'unavailable']
+               else '07:00:00' }}
+      - action: input_number.set_value
+        target: { entity_id: input_number.current_recovery_time }
+        data: { value: "{{ [base | float, 300] | min }}" }
+      - action: input_number.set_value
+        target: { entity_id: input_number.temperature_delta }
+        data: { value: "{{ [delta | float, 20] | min }}" }
+      - action: input_number.set_value
+        target: { entity_id: input_number.scaled_recovery_time }
+        data: { value: "{{ [scaled | float, 300] | min }}" }
+      - action: input_datetime.set_datetime
+        target: { entity_id: input_datetime.smart_recovery_start_time }
+        data:
+          time: >-
+            {% set start = strptime(wake, '%H:%M:%S') - timedelta(minutes=scaled | float) %}
+            {{ start.strftime('%H:%M:%S') }}
+
+# -----------------------------------------------------------------------------
+# Automations
+# -----------------------------------------------------------------------------
+automation:
+  # Midnight: pick the season's mode from today's forecast.
+  - id: ihvac_set_mode_by_forecast
+    alias: Set HVAC Mode Based on Daily Forecast
+    description: >-
+      Each midnight, read today's forecast high. Above the "cool" threshold ->
+      cool; below the "heat" threshold -> heat; in between -> leave alone.
+    triggers:
+      - trigger: time
+        at: "00:00:00"
+    conditions:
+      # Skip quietly (instead of erroring) when the weather entity is down.
+      - condition: template
+        value_template: "{{ states('weather.home') not in ['unknown', 'unavailable'] }}"
+    actions:
+      - action: weather.get_forecasts
+        target: { entity_id: weather.home }
+        data: { type: daily }
+        response_variable: forecast
+        continue_on_error: true
+      - variables:
+          days: "{{ ((forecast | default({})).get('weather.home', {})).get('forecast', []) }}"
+          high: "{{ days[0].temperature | float(none) if days | count > 0 else none }}"
+      - choose:
+          - conditions: "{{ high is not none and high > states('input_number.forecast_cool_above') | float(74) }}"
+            sequence:
+              - action: climate.set_hvac_mode
+                target: { entity_id: climate.thermostat }
+                data: { hvac_mode: cool }
+          - conditions: "{{ high is not none and high < states('input_number.forecast_heat_below') | float(60) }}"
+            sequence:
+              - action: climate.set_hvac_mode
+                target: { entity_id: climate.thermostat }
+                data: { hvac_mode: heat }
+    mode: single
+
+  # Cooling season: Intelligent HVAC decides the setpoint (windows, coast, pre-cool...).
+  - id: ihvac_smart_cooling
+    alias: Intelligent HVAC Smart Cooling
+    description: Let Intelligent HVAC set the cooling setpoint from the learned model.
+    triggers:
+      - trigger: homeassistant
+        event: start
+      - trigger: time_pattern
+        minutes: /15
+    conditions:
+      - condition: state
+        entity_id: climate.thermostat
+        state: [cool, heat_cool]
+      # Only once the model has a recommendation (integration loaded + trained).
+      - condition: template
+        value_template: "{{ states('sensor.intelligent_hvac_recommended_cooling_setpoint') | is_number }}"
+    actions:
+      - action: intelligent_hvac.apply_smart_cooling_setpoint
+        data: { climate_entity: climate.thermostat }
+    mode: single
+
+  # Heating season, evening: relax the setpoint, deeper setback when it is mild.
+  - id: ihvac_nighttime_setback
+    alias: Turn down heat at night (Dynamic Setback)
+    description: Sets back the temperature at 22:00, adjusted for outdoor temperature.
+    triggers:
+      - trigger: time
+        at: "22:00:00"
+    conditions:
+      - condition: state
+        entity_id: climate.thermostat
+        state: heat
+    actions:
+      - action: climate.set_temperature
+        target: { entity_id: climate.thermostat }
+        data:
+          temperature: >-
+            {% if is_state('binary_sensor.outdoor_temperature_below_extreme_cold_threshold', 'on') %}
+              {{ states('input_number.extreme_cold_setback_temperature') | float(68) }}
+            {% elif is_state('binary_sensor.outdoor_temperature_below_moderate_cold_threshold', 'on') %}
+              {{ states('input_number.moderate_cold_setback_temperature') | float(67) }}
+            {% else %}
+              {{ states('input_number.nighttime_setback_temperature') | float(65) }}
+            {% endif %}
+    mode: single
+
+  # Keep the recovery start time fresh.
+  - id: ihvac_recovery_daily
+    alias: Update Smart Recovery Start Time Daily
+    triggers:
+      - trigger: time
+        at: "00:00:01"
+    conditions:
+      - condition: numeric_state
+        entity_id: sensor.intelligent_hvac_time_to_target_5degf_heat
+        above: 0
+    actions:
+      - action: script.intelligent_hvac_update_recovery
+    mode: single
+
+  - id: ihvac_recovery_on_change
+    alias: Update Recovery Values on Change
+    description: >-
+      Recompute when the model, target temperature or wake-up time changes.
+      Locked out 05:00-10:00 so a late recalculation can never move the start
+      time into the past (which would skip heating until tomorrow).
+    triggers:
+      - trigger: state
+        entity_id:
+          - sensor.intelligent_hvac_time_to_target_5degf_heat
+          - input_number.target_temperature
+          - input_datetime.target_wake_up_time
+    conditions:
+      - condition: numeric_state
+        entity_id: sensor.intelligent_hvac_time_to_target_5degf_heat
+        above: 0
+      - condition: time
+        after: "10:00:00"
+        before: "05:00:00"
+    actions:
+      - action: script.intelligent_hvac_update_recovery
+    mode: queued
+    max: 3
+
+  # The payoff: start heating exactly when the model says we must.
+  - id: ihvac_morning_heat_up
+    alias: "Smart Recovery: Morning Heat Up"
+    description: Starts heating at the computed time so the house reaches the target at wake-up.
+    triggers:
+      - trigger: time
+        at: input_datetime.smart_recovery_start_time
+    conditions:
+      - condition: state
+        entity_id: climate.thermostat
+        state: heat
+      - condition: numeric_state
+        entity_id: input_number.scaled_recovery_time
+        above: 0
+    actions:
+      - action: climate.set_temperature
+        target: { entity_id: climate.thermostat }
+        data:
+          temperature: "{{ states('input_number.target_temperature') | float(70) }}"
+    mode: single

@@ -1,0 +1,13 @@
+{
+  "domain": "intelligent_hvac",
+  "name": "Intelligent HVAC",
+  "codeowners": ["@JHenzi"],
+  "config_flow": true,
+  "dependencies": ["recorder"],
+  "documentation": "https://github.com/JHenzi/IntelligentHVAC",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/JHenzi/IntelligentHVAC/issues",
+  "requirements": ["numpy>=1.20.0"],
+  "version": "1.1.0"
+}
