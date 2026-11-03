@@ -59,6 +59,12 @@ views:
       - entity: input_number.recovery_time_buffer
         name: Safety Buffer (minutes)
         icon: mdi:timer-outline
+      - entity: input_number.fallback_recovery_lead
+        name: Fallback Lead (min before wake)
+        icon: mdi:shield-check
+      - entity: input_number.max_recovery_lead
+        name: Max Lead (earliest start)
+        icon: mdi:timer-alert-outline
     - type: entities
       entities:
       - entity: sensor.intelligent_hvac_recommended_cooling_setpoint

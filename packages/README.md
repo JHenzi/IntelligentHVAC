@@ -8,7 +8,7 @@
 
 | Kind | What |
 |---|---|
-| Helpers | Wake-up time, target temperature, setback temperatures & cold thresholds, season-switch thresholds, calculated recovery values |
+| Helpers | Wake-up time, target temperature, fallback & max recovery lead, setback temperatures & cold thresholds, season-switch thresholds, calculated recovery values |
 | Template sensors | `sensor.outdoor_temperature_most_recent` + cold-threshold binary sensors |
 | Script | `script.intelligent_hvac_update_recovery` — the one place the recovery math lives |
 | Automations | Season mode from forecast · Smart cooling · Nightly setback · Recovery updates · Morning heat-up |
@@ -46,6 +46,18 @@ The recovery start time is not recalculated between 05:00 and 10:00, so a late u
 ## First run
 
 The helpers deliberately have no `initial:` value, so Home Assistant **restores your settings across restarts** instead of resetting them. On first start they sit at their minimum — set your **wake-up time, target temperature, setbacks and thresholds** (the dashboard has them all) before relying on the automations.
+
+Suggested starting values for the safety limits: **Fallback Recovery Lead 90 min**, **Maximum Recovery Lead 180 min**. Watch a few mornings and adjust.
+
+## Safety net: fallback heat-up
+
+The learned model decides *when* heat-up starts, but within limits you set:
+
+- The smart start is never **earlier** than *wake − Maximum Recovery Lead* (a model that's too pessimistic can't heat the house half the night).
+- The smart start is never **later** than *wake − Fallback Recovery Lead*.
+- **Smart Recovery: Fallback Heat Up** checks every 5 minutes inside that fallback window. If the thermostat is in `heat` and still below the target, it raises the setpoint and leaves a notification. That covers a missing or implausible model, a stale start time, or HA being restarted at the start minute.
+
+If you see the fallback notification often, the model isn't doing its job. Please open an issue with your Thermal Model Confidence and Time to Target values.
 
 ## Notes
 
