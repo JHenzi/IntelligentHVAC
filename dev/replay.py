@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from custom_components.intelligent_hvac.resampling import resample_to_uniform_timesteps  # noqa: E402
 from custom_components.intelligent_hvac.segmentation import identify_segments  # noqa: E402
+from custom_components.intelligent_hvac import physics  # noqa: E402
 
 
 def load(path):
@@ -92,6 +93,20 @@ def main():
             print(f"   {s.start_time:%m-%d %H:%M}  {s.duration_minutes:4.0f} min  "
                   f"{s.start_indoor_temp:.1f}->{s.end_indoor_temp:.1f}  out {s.avg_outdoor_temp:5.1f}  "
                   f"{s.rate:+.1f}°F/h")
+
+    m = physics.fit_heating(segs)
+    print("\nphysics model:", "NOT FITTED" if m is None else "")
+    if m:
+        print(f"  k={m.k:.4f}/h  g={m.g:+.3f}°F/h  P={m.P:.2f}°F/h  ({m.p_source}; idle runs {m.n_idle}, "
+              f"long runs {m.n_long}, duty windows {m.n_duty})")
+        print(f"  backtest (leave-one-out, {m.backtest_n} runs): MAE {m.backtest_mae_min} min, bias {m.backtest_bias_min} min")
+        print(f"  confidence {physics.confidence(m):.0%}   outdoor seen {m.outdoor_range[0]:.0f}..{m.outdoor_range[1]:.0f}°F")
+        dp = physics.duty_cycle_estimates(segs, m.k, m.g)
+        if dp:
+            print(f"  duty-cycle P estimates: n={len(dp)} median {sorted(dp)[len(dp)//2]:.2f}")
+        print("  recovery 65->70°F:", ", ".join(
+            f"{o}°F out: {('%.0f min' % r) if (r := m.recovery_minutes(65, 70, o)) is not None else 'unreachable'}"
+            for o in (50, 40, 30, 20, 10, 0, -10)))
 
 
 if __name__ == "__main__":
