@@ -26,7 +26,8 @@ DEST="$CONFIG/custom_components/intelligent_hvac/"
 # rsync --delete would wipe it, so refuse until it has been moved aside.
 if [[ -e "$DEST/.git" ]]; then
   echo "error: $DEST is a git checkout (legacy layout)." >&2
-  echo "       Move it aside first, e.g.: mv '$DEST' '${DEST%/}.legacy'" >&2
+  echo "       Move it OUT of custom_components/ first (HA would try to load it there)," >&2
+  echo "       e.g.: mv '${DEST%/}' ~/intelligent_hvac.legacy" >&2
   exit 1
 fi
 
