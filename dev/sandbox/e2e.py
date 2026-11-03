@@ -279,7 +279,9 @@ def heating_automations(ha: HA) -> None:
 def fallback_heat_up(ha: HA) -> None:
     print("Fallback heat-up")
     auto = ha.automation_by_id("ihvac_fallback_heat_up")
-    now = datetime.now()
+    # Wake-up times are HA-local; the machine running this may be in another zone (CI = UTC).
+    from zoneinfo import ZoneInfo
+    now = datetime.now(ZoneInfo(ha.get("/api/config")["time_zone"]))
 
     def run(wake_in_min, lead, mode="heat", setpoint=62):
         wake = (now + timedelta(minutes=wake_in_min)).strftime("%H:%M:00")
