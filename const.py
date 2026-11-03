@@ -11,8 +11,8 @@ PLATFORM = "sensor"
 PLATFORMS = ["sensor"]
 
 # Version
-VERSION = "1.0.0"
-ISSUE_URL = "https://github.com/yourusername/intelligent_hvac/issues"
+VERSION = "1.1.0"  # Cooling model uses temperature difference and exposes pre-cool guidance
+ISSUE_URL = "https://github.com/JHenzi/IntelligentHVAC/issues"
 
 # Configuration keys
 CONF_CLIMATE_ENTITY = "climate_entity"
@@ -21,10 +21,22 @@ CONF_OUTDOOR_SENSOR = "outdoor_sensor"
 CONF_TRAINING_DAYS = "training_days"
 CONF_INDOOR_SENSOR_WEIGHTS = "indoor_sensor_weights"
 CONF_SAMPLING_INTERVAL_MINUTES = "sampling_interval_minutes"
+CONF_COMFORT_COOL_TEMP = "comfort_cool_temp"
+CONF_NIGHT_SETBACK_TEMP = "night_setback_temp"
+CONF_MAX_PRECOOL_OFFSET = "max_precool_offset"
+CONF_PRECOOL_LEAD_MINUTES = "precool_lead_minutes"
+CONF_NIGHT_START = "night_start"
+CONF_NIGHT_END = "night_end"
 
 # Defaults
 DEFAULT_TRAINING_DAYS = 30
 DEFAULT_SAMPLING_INTERVAL_MINUTES = 5
+DEFAULT_COMFORT_COOL_TEMP = 72.0
+DEFAULT_NIGHT_SETBACK_TEMP = 74.0
+DEFAULT_MAX_PRECOOL_OFFSET = 2.0
+DEFAULT_PRECOOL_LEAD_MINUTES = 60
+DEFAULT_NIGHT_START = "22:00"
+DEFAULT_NIGHT_END = "07:00"
 
 # Segment Boundary Rules (CRITICAL - prevents garbage learning)
 MIN_SEGMENT_DURATION_MINUTES = 10  # Ignore segments shorter than this
@@ -70,8 +82,11 @@ SENSOR_TIME_TO_TARGET_5F_HEAT = "sensor.time_to_target_5f_heat"
 # Cooling sensors (summer)
 SENSOR_COOLING_RATE_75F = "sensor.cooling_rate_at_75f"
 SENSOR_TIME_TO_TARGET_5F_COOL = "sensor.time_to_target_5f_cool"
+SENSOR_COOLING_HOLDING_MARGIN = "sensor.cooling_holding_margin"
+SENSOR_PRECOOL_LEAD_TIME = "sensor.precool_lead_time"
+SENSOR_RECOMMENDED_COOLING_SETPOINT = "sensor.recommended_cooling_setpoint"
+SENSOR_COOLING_STRATEGY = "sensor.cooling_strategy"
 
 # Passive sensors (year-round)
 SENSOR_PASSIVE_DECAY_RATE_32F = "sensor.passive_decay_rate_at_32f"  # Winter: home loses heat
 SENSOR_PASSIVE_GAIN_RATE_75F = "sensor.passive_gain_rate_at_75f"  # Summer: home gains heat
-

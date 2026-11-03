@@ -9,6 +9,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.reload import async_setup_reload_service
 
 from .const import DOMAIN, PLATFORMS
+from .smart_control import calculate_smart_cooling_setpoint
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -43,6 +44,81 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
         DOMAIN,
         "force_update",
         handle_force_update,
+    )
+
+    async def handle_apply_smart_cooling_setpoint(call):
+        """Apply the recommended smart cooling setpoint to the climate entity."""
+        entries = hass.data.get(DOMAIN, {})
+        entry_id = call.data.get("entry_id")
+        climate_entity = call.data.get("climate_entity")
+        resolved_entry_id = entry_id
+        coordinator = None
+
+        if entry_id:
+            if entry_id not in entries:
+                _LOGGER.error("Entry %s not found", entry_id)
+                return
+            coordinator = entries[entry_id].get("coordinator")
+        elif climate_entity:
+            for candidate_entry_id, entry_data in entries.items():
+                candidate = entry_data.get("coordinator")
+                if candidate and candidate.climate_entity == climate_entity:
+                    resolved_entry_id = candidate_entry_id
+                    coordinator = candidate
+                    break
+            if coordinator is None:
+                _LOGGER.error(
+                    "No Intelligent HVAC entry found for climate entity %s",
+                    climate_entity,
+                )
+                return
+        elif len(entries) == 1:
+            resolved_entry_id, entry_data = next(iter(entries.items()))
+            coordinator = entry_data.get("coordinator")
+        else:
+            _LOGGER.error(
+                "climate_entity or entry_id required for intelligent_hvac.apply_smart_cooling_setpoint service"
+            )
+            return
+
+        if not coordinator or not coordinator.climate_entity:
+            _LOGGER.error("Coordinator or climate entity not found for entry %s", resolved_entry_id)
+            return
+
+        recommendation = calculate_smart_cooling_setpoint(coordinator)
+        if not recommendation:
+            _LOGGER.error("No smart cooling recommendation available for entry %s", resolved_entry_id)
+            return
+
+        climate_state = hass.states.get(coordinator.climate_entity)
+        service_data = {"entity_id": coordinator.climate_entity}
+
+        if climate_state and climate_state.state == "heat_cool":
+            current_low = climate_state.attributes.get("target_temp_low")
+            if not isinstance(current_low, (int, float)):
+                current_low = 60.0
+            service_data["target_temp_low"] = min(float(current_low), 60.0)
+            service_data["target_temp_high"] = recommendation["recommended_temp"]
+        else:
+            service_data["temperature"] = recommendation["recommended_temp"]
+
+        await hass.services.async_call(
+            "climate",
+            "set_temperature",
+            service_data,
+            blocking=True,
+        )
+        _LOGGER.info(
+            "Applied smart cooling setpoint %.1f°F to %s using strategy %s",
+            recommendation["recommended_temp"],
+            coordinator.climate_entity,
+            recommendation["strategy"],
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        "apply_smart_cooling_setpoint",
+        handle_apply_smart_cooling_setpoint,
     )
     
     return True
@@ -119,4 +195,3 @@ async def async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     _LOGGER.info("Reloading Intelligent HVAC entry: %s", entry.title)
     await async_unload_entry(hass, entry)
     await async_setup_entry(hass, entry)
-

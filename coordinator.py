@@ -197,6 +197,46 @@ class IntelligentHVACCoordinator(DataUpdateCoordinator):
             self.last_processed_timestamp = None
             self.existing_segments = []
             self.existing_model = None
+
+    async def _async_get_forecast_high(self) -> float | None:
+        """Get today's forecast high from a weather entity if available."""
+        weather_entity = (
+            self.outdoor_sensor
+            if self.outdoor_sensor and self.outdoor_sensor.startswith("weather.")
+            else "weather.home"
+        )
+
+        state = self.hass.states.get(weather_entity)
+        if state:
+            forecast = state.attributes.get("forecast")
+            if isinstance(forecast, list) and forecast:
+                temp = forecast[0].get("temperature")
+                if isinstance(temp, (int, float)):
+                    return float(temp)
+
+        try:
+            response = await self.hass.services.async_call(
+                "weather",
+                "get_forecasts",
+                {
+                    "entity_id": weather_entity,
+                    "type": "daily",
+                },
+                blocking=True,
+                return_response=True,
+            )
+            if isinstance(response, dict):
+                entity_response = response.get(weather_entity, {})
+                if isinstance(entity_response, dict):
+                    forecast = entity_response.get("forecast")
+                    if isinstance(forecast, list) and forecast:
+                        temp = forecast[0].get("temperature")
+                        if isinstance(temp, (int, float)):
+                            return float(temp)
+        except Exception as err:
+            _LOGGER.debug("Unable to fetch weather forecast high for %s: %s", weather_entity, err)
+
+        return None
     
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch and process data."""
@@ -433,6 +473,8 @@ class IntelligentHVACCoordinator(DataUpdateCoordinator):
                 normalized_temp,
             )
             
+            forecast_high_temp = await self._async_get_forecast_high()
+
             return {
                 "resampled_data": self.resampled_data,
                 "normalized_indoor_temp": normalized_temp,
@@ -440,6 +482,7 @@ class IntelligentHVACCoordinator(DataUpdateCoordinator):
                 "last_processed_timestamp": now.isoformat(),
                 "segments": self.existing_segments,
                 "model": self.existing_model,
+                "forecast_high_temp": forecast_high_temp,
             }
             
         except Exception as err:
@@ -476,4 +519,3 @@ class IntelligentHVACCoordinator(DataUpdateCoordinator):
         # on the next update. The important thing is we've cleared the in-memory
         # state (existing_segments, existing_model) so we start fresh.
         _LOGGER.info("Old data will be overwritten on next update")
-

@@ -13,6 +13,8 @@ from homeassistant.helpers.selector import (
     EntitySelectorConfig,
     NumberSelector,
     NumberSelectorConfig,
+    TextSelector,
+    TextSelectorConfig,
 )
 
 from .const import (
@@ -23,8 +25,20 @@ from .const import (
     CONF_TRAINING_DAYS,
     CONF_INDOOR_SENSOR_WEIGHTS,
     CONF_SAMPLING_INTERVAL_MINUTES,
+    CONF_COMFORT_COOL_TEMP,
+    CONF_NIGHT_SETBACK_TEMP,
+    CONF_MAX_PRECOOL_OFFSET,
+    CONF_PRECOOL_LEAD_MINUTES,
+    CONF_NIGHT_START,
+    CONF_NIGHT_END,
     DEFAULT_TRAINING_DAYS,
     DEFAULT_SAMPLING_INTERVAL_MINUTES,
+    DEFAULT_COMFORT_COOL_TEMP,
+    DEFAULT_NIGHT_SETBACK_TEMP,
+    DEFAULT_MAX_PRECOOL_OFFSET,
+    DEFAULT_PRECOOL_LEAD_MINUTES,
+    DEFAULT_NIGHT_START,
+    DEFAULT_NIGHT_END,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -96,6 +110,42 @@ class IntelligentHVACConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         mode="box",
                         step=1,
                     )
+                ),
+                vol.Optional(
+                    CONF_COMFORT_COOL_TEMP,
+                    default=DEFAULT_COMFORT_COOL_TEMP,
+                ): NumberSelector(
+                    NumberSelectorConfig(min=60, max=85, mode="box", step=0.5)
+                ),
+                vol.Optional(
+                    CONF_NIGHT_SETBACK_TEMP,
+                    default=DEFAULT_NIGHT_SETBACK_TEMP,
+                ): NumberSelector(
+                    NumberSelectorConfig(min=60, max=85, mode="box", step=0.5)
+                ),
+                vol.Optional(
+                    CONF_MAX_PRECOOL_OFFSET,
+                    default=DEFAULT_MAX_PRECOOL_OFFSET,
+                ): NumberSelector(
+                    NumberSelectorConfig(min=0, max=6, mode="box", step=0.5)
+                ),
+                vol.Optional(
+                    CONF_PRECOOL_LEAD_MINUTES,
+                    default=DEFAULT_PRECOOL_LEAD_MINUTES,
+                ): NumberSelector(
+                    NumberSelectorConfig(min=0, max=360, mode="box", step=5)
+                ),
+                vol.Optional(
+                    CONF_NIGHT_START,
+                    default=DEFAULT_NIGHT_START,
+                ): TextSelector(
+                    TextSelectorConfig(type="text")
+                ),
+                vol.Optional(
+                    CONF_NIGHT_END,
+                    default=DEFAULT_NIGHT_END,
+                ): TextSelector(
+                    TextSelectorConfig(type="text")
                 ),
             }
         )
@@ -251,8 +301,61 @@ class IntelligentHVACOptionsFlowHandler(config_entries.OptionsFlow):
                         step=1,
                     )
                 ),
+                vol.Optional(
+                    CONF_COMFORT_COOL_TEMP,
+                    default=options.get(
+                        CONF_COMFORT_COOL_TEMP,
+                        data.get(CONF_COMFORT_COOL_TEMP, DEFAULT_COMFORT_COOL_TEMP),
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(min=60, max=85, mode="box", step=0.5)
+                ),
+                vol.Optional(
+                    CONF_NIGHT_SETBACK_TEMP,
+                    default=options.get(
+                        CONF_NIGHT_SETBACK_TEMP,
+                        data.get(CONF_NIGHT_SETBACK_TEMP, DEFAULT_NIGHT_SETBACK_TEMP),
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(min=60, max=85, mode="box", step=0.5)
+                ),
+                vol.Optional(
+                    CONF_MAX_PRECOOL_OFFSET,
+                    default=options.get(
+                        CONF_MAX_PRECOOL_OFFSET,
+                        data.get(CONF_MAX_PRECOOL_OFFSET, DEFAULT_MAX_PRECOOL_OFFSET),
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(min=0, max=6, mode="box", step=0.5)
+                ),
+                vol.Optional(
+                    CONF_PRECOOL_LEAD_MINUTES,
+                    default=options.get(
+                        CONF_PRECOOL_LEAD_MINUTES,
+                        data.get(CONF_PRECOOL_LEAD_MINUTES, DEFAULT_PRECOOL_LEAD_MINUTES),
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(min=0, max=360, mode="box", step=5)
+                ),
+                vol.Optional(
+                    CONF_NIGHT_START,
+                    default=options.get(
+                        CONF_NIGHT_START,
+                        data.get(CONF_NIGHT_START, DEFAULT_NIGHT_START),
+                    ),
+                ): TextSelector(
+                    TextSelectorConfig(type="text")
+                ),
+                vol.Optional(
+                    CONF_NIGHT_END,
+                    default=options.get(
+                        CONF_NIGHT_END,
+                        data.get(CONF_NIGHT_END, DEFAULT_NIGHT_END),
+                    ),
+                ): TextSelector(
+                    TextSelectorConfig(type="text")
+                ),
             }
         )
 
         return self.async_show_form(step_id="init", data_schema=data_schema)
-

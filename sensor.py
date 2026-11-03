@@ -9,12 +9,21 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
+from .const import (
+    CONF_COMFORT_COOL_TEMP,
+    CONF_PRECOOL_LEAD_MINUTES,
+    DEFAULT_COMFORT_COOL_TEMP,
+    DEFAULT_PRECOOL_LEAD_MINUTES,
+)
 from .coordinator import IntelligentHVACCoordinator
 from .learning import (
+    predict_active_cooling_rate,
+    predict_cooling_holding_margin,
     predict_passive_decay_rate,
     predict_time_to_target_heat,
     predict_time_to_target_cool,
 )
+from .smart_control import calculate_smart_cooling_setpoint
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,8 +41,36 @@ def _get_current_outdoor_temp(
     """
     if not outdoor_sensor:
         return None
-    
-    # Try to get from resampled data first (most recent value)
+
+    helper_sensor = "sensor.outdoor_temperature_most_recent"
+    if outdoor_sensor.startswith("weather."):
+        helper_state = hass.states.get(helper_sensor)
+        if helper_state and helper_state.state not in ("unknown", "unavailable"):
+            try:
+                return float(helper_state.state)
+            except (ValueError, TypeError):
+                pass
+
+    # Prefer the live entity state for "current" temperature. Recorder history can be
+    # stale for weather entities because attribute-only updates are not significant.
+    state = hass.states.get(outdoor_sensor)
+    if state:
+        try:
+            temp = float(state.state)
+            return temp
+        except (ValueError, TypeError):
+            pass
+
+        attrs = state.attributes
+        if outdoor_sensor.startswith("weather."):
+            temp = attrs.get("temperature")
+        else:
+            temp = attrs.get("temperature") or attrs.get("current_temperature")
+
+        if isinstance(temp, (int, float)):
+            return float(temp)
+
+    # Fall back to recorder-backed resampled data when live state is unavailable.
     if resampled_data:
         outdoor_data = resampled_data.get(outdoor_sensor, [])
         if outdoor_data:
@@ -56,26 +93,28 @@ def _get_current_outdoor_temp(
                 if isinstance(temp, (int, float)):
                     return float(temp)
     
-    # Fallback to current state
-    state = hass.states.get(outdoor_sensor)
-    if state:
-        # Try state value
-        try:
-            temp = float(state.state)
-            return temp
-        except (ValueError, TypeError):
-            pass
-        
-        # Try attributes
-        attrs = state.attributes
-        if outdoor_sensor.startswith("weather."):
-            temp = attrs.get("temperature")
-        else:
-            temp = attrs.get("temperature") or attrs.get("current_temperature")
-        
-        if isinstance(temp, (int, float)):
-            return float(temp)
-    
+    return None
+
+
+def _get_cooling_target_temp(
+    hass: HomeAssistant,
+    climate_entity: str | None,
+) -> float | None:
+    """Get the active cooling target temperature from the climate entity."""
+    if not climate_entity:
+        return None
+
+    state = hass.states.get(climate_entity)
+    if not state:
+        return None
+
+    attrs = state.attributes
+
+    for attr_name in ("target_temp_low", "temperature"):
+        value = attrs.get(attr_name)
+        if isinstance(value, (int, float)):
+            return float(value)
+
     return None
 
 
@@ -101,6 +140,10 @@ async def async_setup_entry(
         # Cooling sensors (summer)
         CoolingRate75FSensor(coordinator, entry),
         TimeToTarget5FCoolSensor(coordinator, entry),
+        CoolingHoldingMarginSensor(coordinator, entry),
+        PreCoolLeadTimeSensor(coordinator, entry),
+        RecommendedCoolingSetpointSensor(coordinator, entry),
+        CoolingStrategySensor(coordinator, entry),
         # Passive sensors (year-round)
         PassiveDecayRate32FSensor(coordinator, entry),
         PassiveGainRate75FSensor(coordinator, entry),
@@ -459,7 +502,7 @@ class HeatingRate32FSensor(IntelligentHVACSensor):
         
         # Calculate heating rate from active heating model
         # Rate = temp_change / time, so we predict time for 1°F change
-        time_minutes = predict_time_to_target_heat(model, 1.0, outdoor_temp)
+        time_minutes = predict_time_to_target_heat(model, 1.0, outdoor_temp, normalized_temp)
         if time_minutes is not None and time_minutes > 0:
             # Convert to rate: 1°F / (time_minutes / 60 hours) = 60 / time_minutes °F/hr
             rate = 60.0 / time_minutes
@@ -497,7 +540,7 @@ class HeatingRate32FSensor(IntelligentHVACSensor):
                 normalized_temp = data.get("normalized_indoor_temp")
                 if normalized_temp is not None:
                     from .learning import predict_time_to_target_heat
-                    time_minutes = predict_time_to_target_heat(model, 1.0, outdoor_temp or 32.0)
+                    time_minutes = predict_time_to_target_heat(model, 1.0, outdoor_temp or 32.0, normalized_temp)
                     attrs["debug_time_for_1f"] = time_minutes
                     if time_minutes is not None and time_minutes > 0:
                         attrs["debug_calculated_rate"] = round(60.0 / time_minutes, 2)
@@ -628,7 +671,7 @@ class TimeToTarget5FHeatSensor(IntelligentHVACSensor):
         ) or 32.0
         
         # Predict time to raise temp by 5°F
-        time_minutes = predict_time_to_target_heat(model, 5.0, outdoor_temp)
+        time_minutes = predict_time_to_target_heat(model, 5.0, outdoor_temp, normalized_temp)
         if time_minutes is not None:
             return round(time_minutes, 1)
         
@@ -707,7 +750,7 @@ class CoolingRate75FSensor(IntelligentHVACSensor):
         
         # Calculate cooling rate from active cooling model
         # Rate = temp_change / time, so we predict time for 1°F change
-        time_minutes = predict_time_to_target_cool(model, 1.0, outdoor_temp)
+        time_minutes = predict_time_to_target_cool(model, 1.0, outdoor_temp, normalized_temp)
         if time_minutes is not None and time_minutes > 0:
             # Convert to rate: -1°F / (time_minutes / 60 hours) = -60 / time_minutes °F/hr
             # (negative because cooling reduces temperature)
@@ -788,7 +831,7 @@ class TimeToTarget5FCoolSensor(IntelligentHVACSensor):
         ) or 75.0
         
         # Predict time to lower temp by 5°F
-        time_minutes = predict_time_to_target_cool(model, 5.0, outdoor_temp)
+        time_minutes = predict_time_to_target_cool(model, 5.0, outdoor_temp, normalized_temp)
         if time_minutes is not None:
             return round(time_minutes, 1)
         
@@ -818,6 +861,344 @@ class TimeToTarget5FCoolSensor(IntelligentHVACSensor):
             attrs["model_confidence"] = round(model.confidence_score * 100, 1)
             attrs["low_confidence_warning"] = model.confidence_score < 0.5
         return attrs
+
+
+class CoolingHoldingMarginSensor(IntelligentHVACSensor):
+    """Sensor for net cooling headroom under current conditions."""
+
+    def __init__(
+        self,
+        coordinator: IntelligentHVACCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        """Initialize the cooling holding margin sensor."""
+        super().__init__(
+            coordinator,
+            entry,
+            name="Cooling Holding Margin",
+            unique_id="cooling_holding_margin",
+            icon="mdi:gauge",
+        )
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the net cooling headroom in °F/hr."""
+        data = self.coordinator.data
+        if not data:
+            return None
+
+        model = data.get("model")
+        normalized_temp = data.get("normalized_indoor_temp")
+        if not model or normalized_temp is None:
+            return None
+
+        if "cooling" not in model.time_to_target_functions:
+            return None
+        if "passive_decay" not in model.time_to_target_functions:
+            return None
+
+        outdoor_temp = _get_current_outdoor_temp(
+            self.hass,
+            self.coordinator.outdoor_sensor,
+            self.coordinator.resampled_data,
+        )
+        if outdoor_temp is None:
+            return None
+
+        margin = predict_cooling_holding_margin(model, normalized_temp, outdoor_temp)
+        return round(margin, 2) if margin is not None else None
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        """Return the unit of measurement."""
+        return "°F/hr"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes."""
+        data = self.coordinator.data
+        model = data.get("model") if data else None
+        normalized_temp = data.get("normalized_indoor_temp") if data else None
+        outdoor_temp = _get_current_outdoor_temp(
+            self.hass,
+            self.coordinator.outdoor_sensor,
+            self.coordinator.resampled_data,
+        )
+
+        attrs = {
+            "description": "Net cooling capacity after subtracting passive heat gain",
+            "indoor_temp_f": normalized_temp,
+            "outdoor_temp_f": outdoor_temp,
+        }
+
+        if model and normalized_temp is not None and outdoor_temp is not None:
+            active_rate = predict_active_cooling_rate(model, normalized_temp, outdoor_temp)
+            passive_rate = predict_passive_decay_rate(model, normalized_temp, outdoor_temp)
+            attrs["active_cooling_rate_f_per_hour"] = (
+                round(active_rate, 3) if active_rate is not None else None
+            )
+            attrs["passive_gain_rate_f_per_hour"] = (
+                round(max(0.0, passive_rate), 3) if passive_rate is not None else None
+            )
+            attrs["cooling_can_keep_up"] = (
+                self.native_value is not None and self.native_value > 0
+            )
+
+        return attrs
+
+
+class PreCoolLeadTimeSensor(IntelligentHVACSensor):
+    """Sensor for how long current pre-cool buffer will last."""
+
+    def __init__(
+        self,
+        coordinator: IntelligentHVACCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        """Initialize the pre-cool lead time sensor."""
+        super().__init__(
+            coordinator,
+            entry,
+            name="Pre-cool Lead Time",
+            unique_id="precool_lead_time",
+            icon="mdi:snowflake-alert",
+        )
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> float | None:
+        """Return minutes of lead time needed to get back to comfort."""
+        data = self.coordinator.data
+        if not data:
+            return None
+
+        model = data.get("model")
+        normalized_temp = data.get("normalized_indoor_temp")
+        if not model or normalized_temp is None:
+            return None
+
+        comfort_temp = float(
+            self.coordinator.options.get(
+                CONF_COMFORT_COOL_TEMP,
+                self.coordinator.config.get(
+                    CONF_COMFORT_COOL_TEMP,
+                    DEFAULT_COMFORT_COOL_TEMP,
+                ),
+            )
+        )
+
+        outdoor_temp = _get_current_outdoor_temp(
+            self.hass,
+            self.coordinator.outdoor_sensor,
+            self.coordinator.resampled_data,
+        )
+        if outdoor_temp is None:
+            return None
+
+        current_target = _get_cooling_target_temp(self.hass, self.coordinator.climate_entity)
+        if current_target is None:
+            current_target = comfort_temp
+
+        # Use the warmer of indoor temp or current target as the recovery starting point.
+        recovery_start_temp = max(normalized_temp, current_target)
+        temp_delta = max(0.0, recovery_start_temp - comfort_temp)
+
+        if temp_delta <= 0:
+            return 0.0
+
+        lead_minutes = predict_time_to_target_cool(
+            model,
+            temp_delta,
+            outdoor_temp,
+            recovery_start_temp,
+        )
+        if lead_minutes is None:
+            return None
+
+        return round(lead_minutes, 1)
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        """Return the unit of measurement."""
+        return "min"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes."""
+        data = self.coordinator.data
+        model = data.get("model") if data else None
+        normalized_temp = data.get("normalized_indoor_temp") if data else None
+        comfort_temp = float(
+            self.coordinator.options.get(
+                CONF_COMFORT_COOL_TEMP,
+                self.coordinator.config.get(
+                    CONF_COMFORT_COOL_TEMP,
+                    DEFAULT_COMFORT_COOL_TEMP,
+                ),
+            )
+        )
+        configured_lead = float(
+            self.coordinator.options.get(
+                CONF_PRECOOL_LEAD_MINUTES,
+                self.coordinator.config.get(
+                    CONF_PRECOOL_LEAD_MINUTES,
+                    DEFAULT_PRECOOL_LEAD_MINUTES,
+                ),
+            )
+        )
+        target_temp = _get_cooling_target_temp(self.hass, self.coordinator.climate_entity)
+        outdoor_temp = _get_current_outdoor_temp(
+            self.hass,
+            self.coordinator.outdoor_sensor,
+            self.coordinator.resampled_data,
+        )
+        margin = (
+            predict_cooling_holding_margin(model, normalized_temp, outdoor_temp)
+            if model and normalized_temp is not None and outdoor_temp is not None
+            else None
+        )
+        recovery_start_temp = (
+            max(normalized_temp, target_temp)
+            if normalized_temp is not None and target_temp is not None
+            else None
+        )
+
+        return {
+            "description": "Minutes of lead time needed to cool from the current setback/indoor temperature back to comfort",
+            "indoor_temp_f": normalized_temp,
+            "cooling_target_f": target_temp,
+            "comfort_temp_f": comfort_temp,
+            "outdoor_temp_f": outdoor_temp,
+            "cooling_holding_margin_f_per_hour": round(margin, 3) if margin is not None else None,
+            "recovery_start_temp_f": recovery_start_temp,
+            "configured_precool_lead_minutes": configured_lead,
+            "precool_recommended_now": self.native_value is not None and self.native_value >= configured_lead,
+            "cooling_can_keep_up": margin > 0 if margin is not None else None,
+        }
+
+
+class RecommendedCoolingSetpointSensor(IntelligentHVACSensor):
+    """Sensor for the recommended cooling setpoint right now."""
+
+    def __init__(
+        self,
+        coordinator: IntelligentHVACCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        """Initialize the recommended cooling setpoint sensor."""
+        super().__init__(
+            coordinator,
+            entry,
+            name="Recommended Cooling Setpoint",
+            unique_id="recommended_cooling_setpoint",
+            icon="mdi:thermostat-auto",
+        )
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+
+    @property
+    def native_value(self) -> float | None:
+        """Return the recommended cooling setpoint."""
+        recommendation = calculate_smart_cooling_setpoint(self.coordinator)
+        if not recommendation:
+            return None
+        return recommendation["recommended_temp"]
+
+    @property
+    def native_unit_of_measurement(self) -> str:
+        """Return the unit of measurement."""
+        return self.hass.config.units.temperature_unit
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return extra state attributes."""
+        recommendation = calculate_smart_cooling_setpoint(self.coordinator)
+        if not recommendation:
+            return {}
+        return {
+            "strategy": recommendation["strategy"],
+            "guidance_message": recommendation["guidance_message"],
+            "comfort_temp_f": recommendation["comfort_temp"],
+            "night_setback_temp_f": recommendation["night_setback_temp"],
+            "precool_lead_minutes": recommendation["precool_lead_minutes"],
+            "max_precool_offset_f": recommendation["max_precool_offset"],
+            "in_night_window": recommendation["in_night_window"],
+            "holding_margin_f_per_hour": recommendation["holding_margin"],
+            "current_target_f": recommendation["current_target"],
+            "indoor_temp_f": recommendation["indoor_temp"],
+            "outdoor_temp_f": recommendation["outdoor_temp"],
+            "forecast_high_temp_f": recommendation["forecast_high_temp"],
+            "passive_decay_rate_f_per_hour": recommendation["passive_decay_rate"],
+            "passive_cooling_rate_f_per_hour": recommendation["passive_cooling_rate"],
+            "passive_gain_rate_f_per_hour": recommendation["passive_gain_rate"],
+            "forecast_heat_excess_f": recommendation["forecast_heat_excess"],
+            "forecast_risk_score": recommendation["forecast_risk_score"],
+            "natural_cooling_favorable": recommendation["natural_cooling_favorable"],
+            "window_favorable": recommendation["window_favorable"],
+            "anticipate_warming_active": recommendation["anticipate_warming_active"],
+            "indoor_trend_rate_f_per_hour": recommendation["indoor_trend_rate"],
+            "outdoor_trend_rate_f_per_hour": recommendation["outdoor_trend_rate"],
+            "indoor_temp_falling": recommendation["indoor_temp_falling"],
+            "indoor_temp_rising": recommendation["indoor_temp_rising"],
+            "indoor_temp_stable": recommendation["indoor_temp_stable"],
+            "house_is_materially_hot": recommendation["house_is_materially_hot"],
+            "window_guidance_advisory_only": recommendation["window_guidance_advisory_only"],
+        }
+
+
+class CoolingStrategySensor(IntelligentHVACSensor):
+    """Sensor describing the current cooling strategy."""
+
+    def __init__(
+        self,
+        coordinator: IntelligentHVACCoordinator,
+        entry: ConfigEntry,
+    ) -> None:
+        """Initialize the cooling strategy sensor."""
+        super().__init__(
+            coordinator,
+            entry,
+            name="Cooling Strategy",
+            unique_id="cooling_strategy",
+            icon="mdi:hvac",
+        )
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the current strategy name."""
+        recommendation = calculate_smart_cooling_setpoint(self.coordinator)
+        if not recommendation:
+            return None
+        return recommendation["strategy"]
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return strategy details."""
+        recommendation = calculate_smart_cooling_setpoint(self.coordinator)
+        if not recommendation:
+            return {}
+        return {
+            "recommended_temp_f": recommendation["recommended_temp"],
+            "guidance_message": recommendation["guidance_message"],
+            "comfort_temp_f": recommendation["comfort_temp"],
+            "night_setback_temp_f": recommendation["night_setback_temp"],
+            "in_night_window": recommendation["in_night_window"],
+            "holding_margin_f_per_hour": recommendation["holding_margin"],
+            "current_target_f": recommendation["current_target"],
+            "indoor_temp_f": recommendation["indoor_temp"],
+            "outdoor_temp_f": recommendation["outdoor_temp"],
+            "forecast_high_temp_f": recommendation["forecast_high_temp"],
+            "natural_cooling_favorable": recommendation["natural_cooling_favorable"],
+            "window_favorable": recommendation["window_favorable"],
+            "anticipate_warming_active": recommendation["anticipate_warming_active"],
+            "forecast_risk_score": recommendation["forecast_risk_score"],
+            "indoor_trend_rate_f_per_hour": recommendation["indoor_trend_rate"],
+            "outdoor_trend_rate_f_per_hour": recommendation["outdoor_trend_rate"],
+            "indoor_temp_falling": recommendation["indoor_temp_falling"],
+            "indoor_temp_rising": recommendation["indoor_temp_rising"],
+            "indoor_temp_stable": recommendation["indoor_temp_stable"],
+            "window_guidance_advisory_only": recommendation["window_guidance_advisory_only"],
+        }
 
 
 class PassiveGainRate75FSensor(IntelligentHVACSensor):

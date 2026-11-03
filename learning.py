@@ -164,7 +164,12 @@ def _learn_passive_decay(
 def _learn_active_heating(
     segments: list[ThermalSegment],
 ) -> dict[str, Any] | None:
-    """Learn active heating model: Time(dT, Tout) = C1 * dT + C2 * Tout + C3"""
+    """Learn active heating model: Time(dT, Tdiff) = C1 * dT + C2 * (Ti - Tout) + C3
+    
+    Uses temperature difference (indoor - outdoor) instead of just outdoor temp,
+    since heat loss is proportional to temperature difference. When it's warmer
+    outside, (Ti - Tout) is smaller, so heating is faster (less time).
+    """
     if len(segments) < MIN_HEAT_CYCLES:
         _LOGGER.debug(
             "Insufficient active heating segments: %d < %d",
@@ -173,7 +178,7 @@ def _learn_active_heating(
         )
         return None
     
-    # Prepare data: X = [dT, Tout], y = Time (duration in minutes)
+    # Prepare data: X = [dT, (Ti - Tout)], y = Time (duration in minutes)
     X = []
     y = []
     
@@ -185,7 +190,10 @@ def _learn_active_heating(
         ):
             dT = abs(seg.end_indoor_temp - seg.start_indoor_temp)
             if dT > 0:  # Only include segments with actual temperature change
-                X.append([dT, seg.avg_outdoor_temp])
+                # Use temperature difference: indoor - outdoor
+                # When warmer outside, this is smaller, so heating is faster
+                temp_diff = seg.start_indoor_temp - seg.avg_outdoor_temp
+                X.append([dT, temp_diff])
                 y.append(seg.duration_minutes)
     
     if len(X) < MIN_HEAT_CYCLES:
@@ -213,7 +221,7 @@ def _learn_active_heating(
         r2 = max(0.0, min(1.0, r2))  # Clamp to [0, 1]
         
         _LOGGER.info(
-            "Active heating model: Time = %.2f * dT + %.2f * Tout + %.2f, R² = %.3f",
+            "Active heating model: Time = %.2f * dT + %.2f * (Ti - Tout) + %.2f, R² = %.3f",
             C1,
             C2,
             C3,
@@ -222,7 +230,7 @@ def _learn_active_heating(
         
         return {
             "function_type": "linear_regression",
-            "formula": "Time(dT, Tout) = C1 * dT + C2 * Tout + C3",
+            "formula": "Time(dT, Tdiff) = C1 * dT + C2 * (Ti - Tout) + C3",
             "parameters": {
                 "C1": C1,
                 "C2": C2,
@@ -238,7 +246,12 @@ def _learn_active_heating(
 def _learn_active_cooling(
     segments: list[ThermalSegment],
 ) -> dict[str, Any] | None:
-    """Learn active cooling model: Time(dT, Tout) = C1 * dT + C2 * Tout + C3"""
+    """Learn active cooling model: Time(dT, Tdiff) = C1 * dT + C2 * (Tout - Ti) + C3
+
+    Mirrors the heating model by using the indoor/outdoor delta instead of raw
+    outdoor temperature. When the outdoor air is much hotter than indoors,
+    cooling takes longer because the home is fighting a larger heat load.
+    """
     # Similar to heating but for cooling segments
     if len(segments) < MIN_HEAT_CYCLES:  # Use same threshold
         _LOGGER.debug(
@@ -248,7 +261,7 @@ def _learn_active_cooling(
         )
         return None
     
-    # Prepare data: X = [dT, Tout], y = Time (duration in minutes)
+    # Prepare data: X = [dT, (Tout - Ti)], y = Time (duration in minutes)
     X = []
     y = []
     
@@ -260,7 +273,8 @@ def _learn_active_cooling(
         ):
             dT = abs(seg.end_indoor_temp - seg.start_indoor_temp)
             if dT > 0:
-                X.append([dT, seg.avg_outdoor_temp])
+                temp_diff = seg.avg_outdoor_temp - seg.start_indoor_temp
+                X.append([dT, temp_diff])
                 y.append(seg.duration_minutes)
     
     if len(X) < MIN_HEAT_CYCLES:
@@ -283,7 +297,7 @@ def _learn_active_cooling(
         r2 = max(0.0, min(1.0, r2))
         
         _LOGGER.info(
-            "Active cooling model: Time = %.2f * dT + %.2f * Tout + %.2f, R² = %.3f",
+            "Active cooling model: Time = %.2f * dT + %.2f * (Tout - Ti) + %.2f, R² = %.3f",
             C1,
             C2,
             C3,
@@ -292,7 +306,7 @@ def _learn_active_cooling(
         
         return {
             "function_type": "linear_regression",
-            "formula": "Time(dT, Tout) = C1 * dT + C2 * Tout + C3",
+            "formula": "Time(dT, Tdiff) = C1 * dT + C2 * (Tout - Ti) + C3",
             "parameters": {
                 "C1": C1,
                 "C2": C2,
@@ -423,8 +437,19 @@ def predict_time_to_target_heat(
     model: ThermalModel,
     temp_change: float,
     outdoor_temp: float,
+    indoor_temp: float | None = None,
 ) -> float | None:
-    """Predict time to reach target temperature (heating) in minutes."""
+    """Predict time to reach target temperature (heating) in minutes.
+    
+    Args:
+        model: Thermal model
+        temp_change: Desired temperature change in °F
+        outdoor_temp: Outdoor temperature in °F
+        indoor_temp: Current indoor temperature in °F (required for new model)
+    
+    Returns:
+        Time in minutes, or None if prediction cannot be made
+    """
     func = model.time_to_target_functions.get("heating")
     if not func:
         return None
@@ -434,7 +459,24 @@ def predict_time_to_target_heat(
     C2 = params.get("C2", 0.0)
     C3 = params.get("C3", 0.0)
     
-    time_minutes = C1 * temp_change + C2 * outdoor_temp + C3
+    # Check formula to determine which model version we're using
+    formula = func.get("formula", "")
+    
+    if "(Ti - Tout)" in formula or "Tdiff" in formula:
+        # New model: uses temperature difference
+        if indoor_temp is None:
+            _LOGGER.warning(
+                "Heating model requires indoor_temp but it was not provided. "
+                "Cannot make accurate prediction."
+            )
+            # Fallback: assume 70°F indoor temp (reasonable default)
+            indoor_temp = 70.0
+        
+        temp_diff = indoor_temp - outdoor_temp
+        time_minutes = C1 * temp_change + C2 * temp_diff + C3
+    else:
+        # Legacy model: uses just outdoor temp (for backward compatibility)
+        time_minutes = C1 * temp_change + C2 * outdoor_temp + C3
     
     return max(0.0, time_minutes)  # Don't return negative time
 
@@ -443,6 +485,7 @@ def predict_time_to_target_cool(
     model: ThermalModel,
     temp_change: float,
     outdoor_temp: float,
+    indoor_temp: float | None = None,
 ) -> float | None:
     """Predict time to reach target temperature (cooling) in minutes."""
     func = model.time_to_target_functions.get("cooling")
@@ -453,8 +496,55 @@ def predict_time_to_target_cool(
     C1 = params.get("C1", 0.0)
     C2 = params.get("C2", 0.0)
     C3 = params.get("C3", 0.0)
-    
-    time_minutes = C1 * temp_change + C2 * outdoor_temp + C3
-    
+
+    formula = func.get("formula", "")
+
+    if "(Tout - Ti)" in formula or "Tdiff" in formula:
+        if indoor_temp is None:
+            _LOGGER.warning(
+                "Cooling model requires indoor_temp but it was not provided. "
+                "Falling back to a 75°F assumption."
+            )
+            indoor_temp = 75.0
+
+        temp_diff = outdoor_temp - indoor_temp
+        time_minutes = C1 * temp_change + C2 * temp_diff + C3
+    else:
+        # Legacy model retained for backward compatibility with stored models.
+        time_minutes = C1 * temp_change + C2 * outdoor_temp + C3
+
     return max(0.0, time_minutes)
 
+
+def predict_active_cooling_rate(
+    model: ThermalModel,
+    indoor_temp: float,
+    outdoor_temp: float,
+) -> float | None:
+    """Predict active cooling capacity in °F/hr as a positive number."""
+    time_minutes = predict_time_to_target_cool(model, 1.0, outdoor_temp, indoor_temp)
+    if time_minutes is None or time_minutes <= 0:
+        return None
+
+    return 60.0 / time_minutes
+
+
+def predict_cooling_holding_margin(
+    model: ThermalModel,
+    indoor_temp: float,
+    outdoor_temp: float,
+) -> float | None:
+    """Estimate net cooling headroom in °F/hr.
+
+    Positive values mean the HVAC can still lower indoor temperature under the
+    current heat load. Negative values mean the home is likely to warm up even
+    with active cooling.
+    """
+    active_cooling_rate = predict_active_cooling_rate(model, indoor_temp, outdoor_temp)
+    passive_rate = predict_passive_decay_rate(model, indoor_temp, outdoor_temp)
+
+    if active_cooling_rate is None or passive_rate is None:
+        return None
+
+    passive_gain_rate = max(0.0, passive_rate)
+    return active_cooling_rate - passive_gain_rate
