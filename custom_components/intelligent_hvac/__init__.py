@@ -6,12 +6,15 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.reload import async_setup_reload_service
 
 from .const import DOMAIN, PLATFORMS
 from .smart_control import calculate_smart_cooling_setpoint
 
 _LOGGER = logging.getLogger(__name__)
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
@@ -87,7 +90,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 
         recommendation = calculate_smart_cooling_setpoint(coordinator)
         if not recommendation:
-            _LOGGER.error("No smart cooling recommendation available for entry %s", resolved_entry_id)
+            _LOGGER.debug("No smart cooling recommendation yet for entry %s (model still learning)", resolved_entry_id)
             return
 
         climate_state = hass.states.get(coordinator.climate_entity)

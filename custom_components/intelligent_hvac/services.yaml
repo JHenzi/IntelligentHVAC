@@ -1,0 +1,18 @@
+force_update:
+  fields:
+    entry_id:
+      required: false
+      selector:
+        text:
+
+apply_smart_cooling_setpoint:
+  fields:
+    climate_entity:
+      required: false
+      selector:
+        entity:
+          domain: climate
+    entry_id:
+      required: false
+      selector:
+        text:

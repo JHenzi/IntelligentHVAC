@@ -17,7 +17,7 @@ The integration is built in layers. Each layer has one job and a validated outpu
 
 | Input | Notes |
 |---|---|
-| Climate entity | Primary thermostat. Needs `hvac_action` and `current_temperature` (see [COMPATIBILITY.md](../COMPATIBILITY.md)). |
+| Climate entity | Primary thermostat. Needs `hvac_action` and `current_temperature` (see [COMPATIBILITY.md](COMPATIBILITY.md)). |
 | Indoor sensors | One or more, optionally weighted. Combined into a single composite temperature. |
 | Outdoor source | A sensor, climate, or weather entity. |
 | Training days | How much history to pull (default 30). Fetches as much as is available. |

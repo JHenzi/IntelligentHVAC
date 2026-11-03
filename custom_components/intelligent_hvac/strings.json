@@ -1,0 +1,103 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Intelligent HVAC",
+        "description": "Learn your home's heating and cooling physics from recorder history.",
+        "data": {
+          "climate_entity": "Thermostat",
+          "indoor_sensors": "Indoor temperature sensors",
+          "outdoor_sensor": "Outdoor temperature source",
+          "training_days": "Training days",
+          "sampling_interval_minutes": "Sampling interval (minutes)",
+          "comfort_cool_temp": "Comfort cooling temperature (°F)",
+          "night_setback_temp": "Night setback temperature (°F)",
+          "max_precool_offset": "Max pre-cool offset (°F)",
+          "precool_lead_minutes": "Pre-cool lead time (minutes)",
+          "night_start": "Night window start",
+          "night_end": "Night window end"
+        },
+        "data_description": {
+          "climate_entity": "The climate entity to learn from and control.",
+          "indoor_sensors": "One or more sensors (or climate entities) averaged into a single indoor temperature.",
+          "outdoor_sensor": "A sensor, climate or weather entity reporting outdoor temperature.",
+          "training_days": "How many days of recorder history to learn from.",
+          "sampling_interval_minutes": "Timestep history is resampled to before learning.",
+          "comfort_cool_temp": "Your normal target when cooling.",
+          "night_setback_temp": "Relaxed cooling target overnight.",
+          "max_precool_offset": "How far below comfort pre-cooling may go.",
+          "precool_lead_minutes": "How far ahead pre-cooling may start.",
+          "night_start": "HH:MM, e.g. 22:00.",
+          "night_end": "HH:MM, e.g. 07:00."
+        }
+      }
+    },
+    "error": {
+      "entity_not_found": "Entity not found.",
+      "must_be_climate_entity": "Must be a climate entity.",
+      "at_least_one_required": "Select at least one indoor sensor.",
+      "must_be_sensor_or_climate": "Indoor sources must be sensor or climate entities.",
+      "must_be_sensor_climate_or_weather": "Outdoor source must be a sensor, climate or weather entity."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Intelligent HVAC options",
+        "description": "Changing entities or training settings relearns the model.",
+        "data": {
+          "climate_entity": "Thermostat",
+          "indoor_sensors": "Indoor temperature sensors",
+          "outdoor_sensor": "Outdoor temperature source",
+          "training_days": "Training days",
+          "sampling_interval_minutes": "Sampling interval (minutes)",
+          "comfort_cool_temp": "Comfort cooling temperature (°F)",
+          "night_setback_temp": "Night setback temperature (°F)",
+          "max_precool_offset": "Max pre-cool offset (°F)",
+          "precool_lead_minutes": "Pre-cool lead time (minutes)",
+          "night_start": "Night window start",
+          "night_end": "Night window end"
+        },
+        "data_description": {
+          "climate_entity": "The climate entity to learn from and control.",
+          "indoor_sensors": "One or more sensors (or climate entities) averaged into a single indoor temperature.",
+          "outdoor_sensor": "A sensor, climate or weather entity reporting outdoor temperature.",
+          "training_days": "How many days of recorder history to learn from.",
+          "sampling_interval_minutes": "Timestep history is resampled to before learning.",
+          "comfort_cool_temp": "Your normal target when cooling.",
+          "night_setback_temp": "Relaxed cooling target overnight.",
+          "max_precool_offset": "How far below comfort pre-cooling may go.",
+          "precool_lead_minutes": "How far ahead pre-cooling may start.",
+          "night_start": "HH:MM, e.g. 22:00.",
+          "night_end": "HH:MM, e.g. 07:00."
+        }
+      }
+    }
+  },
+  "services": {
+    "force_update": {
+      "name": "Force update",
+      "description": "Re-fetch history and relearn the thermal model now.",
+      "fields": {
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "Config entry to update."
+        }
+      }
+    },
+    "apply_smart_cooling_setpoint": {
+      "name": "Apply smart cooling setpoint",
+      "description": "Apply the recommended cooling setpoint to the thermostat. Never changes HVAC mode.",
+      "fields": {
+        "climate_entity": {
+          "name": "Thermostat",
+          "description": "Climate entity to control, e.g. climate.thermostat."
+        },
+        "entry_id": {
+          "name": "Entry ID",
+          "description": "Config entry fallback when more than one Intelligent HVAC entry exists."
+        }
+      }
+    }
+  }
+}

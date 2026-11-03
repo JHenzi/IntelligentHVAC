@@ -6,7 +6,7 @@ from pathlib import Path
 import unittest
 
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "guidance.py"
+MODULE_PATH = Path(__file__).resolve().parents[1] / "custom_components" / "intelligent_hvac" / "guidance.py"
 SPEC = importlib.util.spec_from_file_location("intelligent_hvac_guidance", MODULE_PATH)
 guidance = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
