@@ -21,14 +21,14 @@ Recorder history is usually short (21 days on that install, and climate entities
 
 - [x] **Fallback heat-up (package)** — #5. A fixed-lead safety net: if the house hasn't been told to heat up by *wake-up − fallback lead*, raise the setpoint anyway. Guards against the model being unavailable, implausible, or too late. The smart start time is also clamped to a plausible window.
 - [x] **History + segment store fixes** — #6. Root cause found while fixing: history was ordered by `last_changed`, so every `hvac_action` change within a heating season collapsed into one record (1,457 real transitions → 36 in 21 days). Now: `last_updated` ordering, clock-anchored grid, complete runs only, no merge, 400-day retention. Old stores are archived and relearned (deduping them wasn't worth it: they were built on the collapsed history).
-- [x] **Physics heating model** — #7. First-order (lumped RC) house model: idle periods give the heat-loss coefficient, sustained heating runs give the heating power, and recovery time follows analytically, so colder = slower by construction. Guardrails: reject physically impossible fits, clamp to the observed range, fall back to recent observed recovery rates.
+- [x] **Physics heating model** — #7. First-order (lumped RC) house model: idle periods give the heat-loss coefficient, sustained heating runs give the heating power, and recovery time follows analytically, so colder = slower by construction. Guardrails: physically impossible fits are rejected (no heating prediction; the package fallback/clamp decide), and predictions outside the outdoor range seen so far are flagged `extrapolating`.
 - [x] **Backtest + honest confidence** — #7. On real history: 4.7 min mean error over 8 heat-ups. Score predictions against real past recoveries (held out). Confidence becomes "typical error in minutes", not a weighted checklist.
 - [ ] **Recovery start computed by the integration.** A `Recovery Start Time` sensor for *setback → target at the forecast overnight low*. The package script becomes a thin pass-through.
 
 ## P1: closed loop
 
 - [ ] Morning outcome tracking: when the target was actually reached vs the wake-up time (sensor + dashboard card), auto-tuning the buffer.
-- [ ] Learning runs in the executor; linear-time segmentation.
+- [x] Learning runs in the executor; linear-time segmentation — #6.
 - [ ] Indoor sensor weights honoured; option to exclude the thermostat's own reading.
 - [ ] Manual-override detection (heating and cooling); documented conflicts with Ecobee Smart Recovery / Follow Me.
 
