@@ -14,6 +14,7 @@ from .const import (
     MODEL_FILE,
     CHECKPOINT_FILE_PREFIX,
     VERSION,
+    STORE_SCHEMA_VERSION,
 )
 from .models import ThermalModel, ThermalSegment
 
@@ -196,7 +197,8 @@ async def async_save_checkpoint(
             "entry_id": entry_id,
             "last_processed_timestamp": last_processed_timestamp.isoformat(),
             "last_update_success": True,
-            "version": VERSION,  # Store code version for compatibility checking
+            "version": VERSION,  # Code version that wrote this (informational)
+            "store_schema": STORE_SCHEMA_VERSION,
             "created_at": metadata.get("created_at", last_processed_timestamp.isoformat()) if metadata else last_processed_timestamp.isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -248,6 +250,39 @@ async def async_load_checkpoint(hass: HomeAssistant, entry_id: str) -> dict[str,
     except Exception as err:
         _LOGGER.warning("Error loading checkpoint (will start fresh): %s", err, exc_info=True)
         return None
+
+
+async def async_archive_entry_files(hass: HomeAssistant, entry_id: str, tag: str) -> list[str]:
+    """Rename this entry's raw/segments/model/checkpoint files to *.<tag>.json.
+
+    Used instead of deleting when stored data must no longer be learned from.
+    """
+    names = [
+        f"{RAW_DATA_FILE.replace('.json', '')}_{entry_id}.json",
+        f"{SEGMENTS_FILE.replace('.json', '')}_{entry_id}.json",
+        f"{MODEL_FILE.replace('.json', '')}_{entry_id}.json",
+        f"{CHECKPOINT_FILE_PREFIX}{entry_id}.json",
+    ]
+    storage_dir = get_storage_path(hass)
+
+    def _archive() -> list[str]:
+        moved = []
+        for name in names:
+            src = storage_dir / name
+            if src.exists():
+                dst = src.with_name(f"{src.stem}.{tag}.json")
+                n = 1
+                while dst.exists():
+                    dst = src.with_name(f"{src.stem}.{tag}-{n}.json")
+                    n += 1
+                src.rename(dst)
+                moved.append(dst.name)
+        return moved
+
+    moved = await hass.async_add_executor_job(_archive)
+    if moved:
+        _LOGGER.warning("Archived Intelligent HVAC data (%s): %s", tag, ", ".join(moved))
+    return moved
 
 
 async def async_delete_checkpoint(hass: HomeAssistant, entry_id: str) -> None:

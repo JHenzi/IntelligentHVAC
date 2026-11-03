@@ -68,6 +68,17 @@ SEGMENTS_FILE = "segments.json"
 MODEL_FILE = "model.json"
 CHECKPOINT_FILE_PREFIX = "checkpoint_"
 
+# Version of the on-disk segment store. Bump when stored segments from older
+# code must not be learned from. Old files are archived (renamed), never deleted:
+# recorder history is often only ~10-30 days, so they may be the only record.
+#   1: pre-2026-11 (hvac_action history collapsed by last_changed; ~32x duplicates)
+#   2: last_updated ordering, clock-anchored grid, complete runs only
+STORE_SCHEMA_VERSION = 2
+
+# Segments older than this are pruned so the model follows changes to the house
+# (new windows, new furnace) while still covering a full heating season.
+SEGMENT_RETENTION_DAYS = 400
+
 # Incremental learning settings
 MIN_INCREMENTAL_FETCH_HOURS = 24  # Always fetch at least 24h to catch missed updates
 
