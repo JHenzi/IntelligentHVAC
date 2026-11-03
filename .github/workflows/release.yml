@@ -19,4 +19,11 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag
+        # v1.2.0b1 / v1.2.0rc1 (HA/PEP 440 style) -> pre-release; v1.2.0 -> full release.
+        # Notes: this version's CHANGELOG.md section, then GitHub's generated PR list.
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '/^## /{p = ($2 == v)} p' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "CHANGELOG.md has no '## $v' section"; exit 1; }
+          pre=""; [[ "$v" =~ [a-z] ]] && pre="--prerelease"
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes --notes-file notes.md $pre

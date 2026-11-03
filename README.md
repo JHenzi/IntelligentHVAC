@@ -7,7 +7,7 @@
 
 <p align="center">
   <img alt="Home Assistant" src="https://img.shields.io/badge/Home%20Assistant-custom%20integration-41BDF5?logo=home-assistant&logoColor=white">
-  <img alt="Version" src="https://img.shields.io/badge/version-1.1.0-blue">
+  <img alt="Release" src="https://img.shields.io/github/v/release/JHenzi/IntelligentHVAC?include_prereleases&sort=semver">
   <img alt="IoT class" src="https://img.shields.io/badge/iot__class-local__polling-green">
   <img alt="Cloud" src="https://img.shields.io/badge/cloud-none-lightgrey">
   <a href="https://github.com/JHenzi/IntelligentHVAC/actions/workflows/tests.yml"><img alt="Tests" src="https://github.com/JHenzi/IntelligentHVAC/actions/workflows/tests.yml/badge.svg"></a>

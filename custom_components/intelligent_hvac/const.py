@@ -11,7 +11,7 @@ PLATFORM = "sensor"
 PLATFORMS = ["sensor"]
 
 # Version
-VERSION = "1.1.0"  # Cooling model uses temperature difference and exposes pre-cool guidance
+VERSION = "1.2.0b1"  # informational; stored data is versioned by STORE_SCHEMA_VERSION
 ISSUE_URL = "https://github.com/JHenzi/IntelligentHVAC/issues"
 
 # Configuration keys
