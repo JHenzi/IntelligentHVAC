@@ -23,9 +23,8 @@ _LOGGER = logging.getLogger(__name__)
 def get_storage_path(hass: HomeAssistant) -> Path:
     """Get the storage directory path."""
     config_dir = Path(hass.config.config_dir)
-    storage_dir = config_dir / STORAGE_DIR
-    storage_dir.mkdir(parents=True, exist_ok=True)
-    return storage_dir
+    # Created lazily by the writers, in the executor (no blocking I/O in the event loop).
+    return config_dir / STORAGE_DIR
 
 
 def _get_entry_file_path(hass: HomeAssistant, entry_id: str, filename: str) -> Path:
@@ -47,6 +46,7 @@ async def async_save_raw_data(
         serializable_data = _make_serializable(data)
         
         def _write_file():
+            file_path.parent.mkdir(parents=True, exist_ok=True)
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(serializable_data, f, indent=2, default=str)
         
@@ -93,6 +93,7 @@ async def async_save_segments(
         segments_data = [seg.to_dict() for seg in segments]
         
         def _write_file():
+            file_path.parent.mkdir(parents=True, exist_ok=True)
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(segments_data, f, indent=2, default=str)
         
@@ -144,6 +145,7 @@ async def async_save_model(
         model_data = model.to_dict()
         
         def _write_file():
+            file_path.parent.mkdir(parents=True, exist_ok=True)
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(model_data, f, indent=2, default=str)
         
@@ -208,6 +210,7 @@ async def async_save_checkpoint(
             })
         
         def _write_file():
+            file_path.parent.mkdir(parents=True, exist_ok=True)
             with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(checkpoint_data, f, indent=2, default=str)
         

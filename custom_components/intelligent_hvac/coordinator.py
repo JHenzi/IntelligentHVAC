@@ -63,7 +63,8 @@ class IntelligentHVACCoordinator(DataUpdateCoordinator):
         
         self.hass = hass
         self.entry = entry
-        self.config = entry.data
+        # Options (from the options flow) override the original setup data.
+        self.config = {**entry.data, **(entry.options or {})}
         self.options = entry.options or {}
         
         # Get configuration
