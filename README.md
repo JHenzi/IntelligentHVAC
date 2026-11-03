@@ -45,7 +45,7 @@ No cloud. No guesswork. No hard-coded "start heating at 6 AM". Just *"it takes t
 - 📐 **Models four kinds of thermal behaviour:** active heating, active cooling, passive heat loss, and passive heat gain.
 - 🎯 **Answers the questions automations care about:** *How long to recover 5°F? Can the AC keep up today? When should I start pre-cooling?*
 - 🌬️ **Knows when to do nothing.** Cool night and the house is already shedding heat? It tells you to open the windows or coast instead of burning AC.
-- 📈 **Honest about uncertainty.** A composite confidence score (fit, sample count, temperature coverage) tells you how much to trust it.
+- 📈 **Honest about uncertainty.** Every fit is backtested against your own past heat-ups; confidence is driven by the measured error in minutes.
 - 🔌 **Works with Ecobee and HomeKit thermostats** — anything exposing `hvac_action` and `current_temperature`. See [COMPATIBILITY.md](documentation/COMPATIBILITY.md).
 - 🏡 **Stays local.** Everything runs inside Home Assistant.
 
@@ -146,7 +146,7 @@ Full details: [documentation/SMART_COOLING.md](documentation/SMART_COOLING.md).
 
 ## 🔬 How it works
 
-History → uniform resampling → thermal segments → linear regression → sensors.
+History → uniform resampling → thermal segments → physics model (heat loss + heating power), backtested → sensors.
 Read [documentation/ARCHITECTURE.md](documentation/ARCHITECTURE.md) for the layered design, segment definitions and confidence scoring.
 
 ## 🗺️ Roadmap

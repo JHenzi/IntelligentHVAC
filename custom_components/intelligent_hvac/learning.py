@@ -19,6 +19,7 @@ from .const import (
     SEGMENT_TYPE_ACTIVE_COOLING,
 )
 from .models import ThermalModel, ThermalSegment
+from . import physics
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,11 +60,31 @@ def learn_thermal_model(
         len(active_cooling_segments),
     )
     
-    # Learn passive decay model
-    passive_decay_function = _learn_passive_decay(passive_decay_segments)
-    
-    # Learn active heating model
-    active_heating_function = _learn_active_heating(active_heating_segments)
+    # Heating + passive loss: first-order physics model (see physics.py).
+    # The previous regression (Time = C1*dT + C2*(Ti-Tout) + C3) is no longer
+    # used for heating: on real data it had the wrong sign. If the physics model
+    # can't be fitted we publish no heating prediction rather than a bad one.
+    phys = physics.fit_heating([s for s in segments if s.is_valid])
+    if phys is not None:
+        passive_decay_function = {
+            "function_type": "physics_rc",
+            "formula": "Rate = C1 * (Ti - Tout) + C2   (C1 = -k, C2 = g)",
+            "parameters": {"C1": -phys.k, "C2": phys.g, "R2": None},
+        }
+        active_heating_function = {
+            "function_type": "physics_rc",
+            "formula": "dTi/dt = P - k*(Ti - Tout) + g",
+            "parameters": phys.as_params(),
+        }
+        _LOGGER.info(
+            "Physics heating model: k=%.4f/h g=%+.3f P=%.2f°F/h (%s), backtest MAE %s min over %d runs",
+            phys.k, phys.g, phys.P, phys.p_source,
+            None if phys.backtest_mae_min is None else round(phys.backtest_mae_min, 1), phys.backtest_n,
+        )
+    else:
+        _LOGGER.info("Not enough idle/heating history for the physics heating model yet")
+        passive_decay_function = _learn_passive_decay(passive_decay_segments)
+        active_heating_function = None
     
     # Learn active cooling model
     active_cooling_function = _learn_active_cooling(active_cooling_segments)
@@ -77,14 +98,14 @@ def learn_thermal_model(
     if active_cooling_function:
         time_to_target_functions["cooling"] = active_cooling_function
     
-    # Calculate composite confidence score
-    confidence_score = _calculate_confidence(
-        segments,
-        passive_decay_function,
-        active_heating_function,
-        training_days,
-        first_data_timestamp,
-    )
+    # Confidence: measured prediction error of the physics model. Without it,
+    # the old checklist score, capped low (it is not evidence of accuracy).
+    if phys is not None:
+        confidence_score = physics.confidence(phys)
+    else:
+        confidence_score = min(0.3, _calculate_confidence(
+            segments, passive_decay_function, None, training_days, first_data_timestamp,
+        ))
     
     # Generate model ID
     model_id = _generate_model_id(segments, now)
@@ -459,6 +480,13 @@ def predict_time_to_target_heat(
     C2 = params.get("C2", 0.0)
     C3 = params.get("C3", 0.0)
     
+    if func.get("function_type") == "physics_rc":
+        if indoor_temp is None:
+            return None
+        return physics.PhysicsModel.from_params(params).recovery_minutes(
+            indoor_temp, indoor_temp + temp_change, outdoor_temp
+        )
+
     # Check formula to determine which model version we're using
     formula = func.get("formula", "")
     

@@ -706,6 +706,21 @@ class TimeToTarget5FHeatSensor(IntelligentHVACSensor):
         if model:
             attrs["model_confidence"] = round(model.confidence_score * 100, 1)
             attrs["low_confidence_warning"] = model.confidence_score < 0.5
+            func = model.time_to_target_functions.get("heating") or {}
+            if func.get("function_type") == "physics_rc":
+                p = func.get("parameters", {})
+                attrs.update({
+                    "model_type": "physics (heat loss + heating power)",
+                    "heat_loss_per_hour": round(p.get("k", 0.0), 4),
+                    "heating_power_f_per_hour": round(p.get("P", 0.0), 2),
+                    "heating_power_source": p.get("p_source"),
+                    "backtest_error_minutes": None if p.get("backtest_mae_min") is None else round(p["backtest_mae_min"], 1),
+                    "backtest_runs": p.get("backtest_n", 0),
+                    "outdoor_range_seen_f": [round(p.get("outdoor_min", 0)), round(p.get("outdoor_max", 0))],
+                    "extrapolating": outdoor_temp is not None and not (
+                        p.get("outdoor_min", -999) - 10 <= outdoor_temp <= p.get("outdoor_max", 999) + 10),
+                    "notes": p.get("notes", []),
+                })
         return attrs
 
 
