@@ -10,6 +10,9 @@
   <img alt="Version" src="https://img.shields.io/badge/version-1.1.0-blue">
   <img alt="IoT class" src="https://img.shields.io/badge/iot__class-local__polling-green">
   <img alt="Cloud" src="https://img.shields.io/badge/cloud-none-lightgrey">
+  <a href="https://github.com/JHenzi/IntelligentHVAC/actions/workflows/tests.yml"><img alt="Tests" src="https://github.com/JHenzi/IntelligentHVAC/actions/workflows/tests.yml/badge.svg"></a>
+  <a href="https://github.com/JHenzi/IntelligentHVAC/actions/workflows/validate.yml"><img alt="Validate" src="https://github.com/JHenzi/IntelligentHVAC/actions/workflows/validate.yml/badge.svg"></a>
+  <a href="https://hacs.xyz"><img alt="HACS" src="https://img.shields.io/badge/HACS-custom-orange"></a>
 </p>
 
 <p align="center">
@@ -43,7 +46,7 @@ No cloud. No guesswork. No hard-coded "start heating at 6 AM". Just *"it takes t
 - 🎯 **Answers the questions automations care about:** *How long to recover 5°F? Can the AC keep up today? When should I start pre-cooling?*
 - 🌬️ **Knows when to do nothing.** Cool night and the house is already shedding heat? It tells you to open the windows or coast instead of burning AC.
 - 📈 **Honest about uncertainty.** A composite confidence score (fit, sample count, temperature coverage) tells you how much to trust it.
-- 🔌 **Works with Ecobee and HomeKit thermostats** — anything exposing `hvac_action` and `current_temperature`. See [COMPATIBILITY.md](COMPATIBILITY.md).
+- 🔌 **Works with Ecobee and HomeKit thermostats** — anything exposing `hvac_action` and `current_temperature`. See [COMPATIBILITY.md](documentation/COMPATIBILITY.md).
 - 🏡 **Stays local.** Everything runs inside Home Assistant.
 
 ## 🚀 Installation
@@ -54,7 +57,7 @@ Two parts: the **integration** (learns the model, provides sensors) and the **co
 
 **HACS (custom repository):** HACS → ⋮ → *Custom repositories* → `https://github.com/JHenzi/IntelligentHVAC`, category *Integration* → install → restart.
 
-**Manual:** copy this repo to `config/custom_components/intelligent_hvac/` → restart.
+**Manual:** copy `custom_components/intelligent_hvac/` from this repo into `config/custom_components/` → restart.
 
 Then **Settings → Devices & Services → Add Integration → Intelligent HVAC**:
 
@@ -101,7 +104,7 @@ Core cards only — [dashboards/README.md](dashboards/README.md).
 
 ## 🧊 Smart cooling (summer)
 
-`sensor.cooling_strategy` explains each decision in plain terms:
+`sensor.intelligent_hvac_cooling_strategy` explains each decision in plain terms:
 
 | Strategy | Meaning |
 |---|---|

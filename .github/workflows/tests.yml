@@ -1,0 +1,51 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements_test.txt
+      - run: pip install -r requirements_test.txt
+      - run: python -m pytest -q -p no:logging
+
+  sandbox:
+    name: Sandbox E2E (real Home Assistant)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        ha: ["stable", "beta"]
+    env:
+      HA_VERSION: ${{ matrix.ha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build sandbox config
+        run: dev/sandbox/prepare.sh
+      - name: check_config
+        run: |
+          docker run --rm -v "$PWD/dev/sandbox/config:/config" --entrypoint python3 \
+            ghcr.io/home-assistant/home-assistant:$HA_VERSION \
+            -m homeassistant --script check_config -c /config | tee check.log
+          ! grep -qiE "invalid config|error" check.log
+      - name: Start sandbox
+        working-directory: dev/sandbox
+        run: docker compose up -d
+      - name: E2E checks
+        run: python3 dev/sandbox/e2e.py --restart
+      - name: HA log
+        if: always()
+        run: docker logs ha-sandbox 2>&1 | tail -200

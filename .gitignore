@@ -4,3 +4,6 @@ potential_docs/
 # Python
 __pycache__/
 *.pyc
+
+# Sandbox HA state
+dev/sandbox/config/

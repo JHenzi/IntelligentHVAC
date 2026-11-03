@@ -1,0 +1,25 @@
+# Sandbox Home Assistant: a throw-away instance with NO real devices.
+#
+# `demo:` provides fake climate + weather entities; packages/sandbox_fakes.yaml
+# provides slider-driven stand-ins for the outdoor sensor and the learned
+# model. The real comfort package is copied in by prepare.sh with its entity
+# IDs rewritten to point at these fakes, the same find & replace a user does.
+#
+# Never copy your production config here: it would log in to your real
+# thermostat/cloud accounts and run your real automations a second time.
+
+default_config:
+demo:
+
+homeassistant:
+  name: IHVAC Sandbox
+  unit_system: us_customary
+  time_zone: America/New_York
+  packages: !include_dir_named packages
+
+logger:
+  default: warning
+  logs:
+    custom_components.intelligent_hvac: debug
+    homeassistant.components.automation: info
+    homeassistant.components.script: info

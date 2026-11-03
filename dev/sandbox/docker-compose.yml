@@ -1,0 +1,13 @@
+# Sandbox HA on http://localhost:8125 next to a production HA on 8123.
+# Bridge networking (not host) so it can't collide with production's port
+# or discovery. Run ./prepare.sh first.
+services:
+  ha-sandbox:
+    container_name: ha-sandbox
+    image: ghcr.io/home-assistant/home-assistant:${HA_VERSION:-stable}
+    ports:
+      - "8125:8123"
+    volumes:
+      - ./config:/config
+      - /etc/localtime:/etc/localtime:ro
+    restart: "no"

@@ -1,0 +1,27 @@
+# Sliders that stand in for real-world inputs, so the comfort package can be
+# exercised on demand: drag a slider, watch the script/automations react.
+input_number:
+  sandbox_outdoor_temp:
+    name: "Sandbox: Outdoor Temp"
+    min: -20
+    max: 110
+    step: 1
+    unit_of_measurement: "°F"
+  sandbox_time_to_target_heat:
+    name: "Sandbox: Time to Target 5°F Heat"
+    min: 0
+    max: 400
+    step: 0.1
+    unit_of_measurement: min
+
+template:
+  - sensor:
+      - name: Sandbox Outdoor Temperature
+        unique_id: sandbox_outdoor_temperature
+        unit_of_measurement: "°F"
+        device_class: temperature
+        state: "{{ states('input_number.sandbox_outdoor_temp') }}"
+      - name: Sandbox Time To Target Heat
+        unique_id: sandbox_time_to_target_heat
+        unit_of_measurement: min
+        state: "{{ states('input_number.sandbox_time_to_target_heat') }}"
