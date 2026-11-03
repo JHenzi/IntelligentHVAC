@@ -1,16 +1,16 @@
 {
   "domain": "intelligent_hvac",
   "name": "Intelligent HVAC",
-  "documentation": "https://github.com/yourusername/intelligent_hvac",
+  "documentation": "https://github.com/JHenzi/IntelligentHVAC",
   "config_flow": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "requirements": [
     "numpy>=1.20.0"
   ],
   "dependencies": [],
   "codeowners": [
-    "@yourusername"
+    "@JHenzi"
   ],
-  "iot_class": "local_polling"
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/JHenzi/IntelligentHVAC/issues"
 }
-

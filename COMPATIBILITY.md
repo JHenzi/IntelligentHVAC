@@ -50,3 +50,4 @@ To verify compatibility:
 1. Check that `climate.thermostat` has `hvac_action` attribute
 2. Check that `climate.thermostat` has `current_temperature` attribute
 3. The integration should work identically with both integrations
+
