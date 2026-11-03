@@ -19,7 +19,8 @@ from .const import (
     DEFAULT_TRAINING_DAYS,
     DEFAULT_SAMPLING_INTERVAL_MINUTES,
     MIN_INCREMENTAL_FETCH_HOURS,
-    VERSION,
+    SEGMENT_RETENTION_DAYS,
+    STORE_SCHEMA_VERSION,
 )
 from .history import async_get_history_for_entities
 from .resampling import resample_to_uniform_timesteps
@@ -36,6 +37,7 @@ from .storage import (
     async_save_checkpoint,
     async_load_checkpoint,
     async_delete_checkpoint,
+    async_archive_entry_files,
 )
 from .models import ThermalSegment, ThermalModel
 
@@ -120,66 +122,57 @@ class IntelligentHVACCoordinator(DataUpdateCoordinator):
         try:
             checkpoint = await async_load_checkpoint(self.hass, self.entry.entry_id)
             
+            stale_tag = None
             if checkpoint:
-                # Check if code version has changed (invalidate old data)
-                checkpoint_version = checkpoint.get("version", "0.0.0")
-                if checkpoint_version != VERSION:
-                    _LOGGER.info(
-                        "Code version changed (%s -> %s), invalidating checkpoint and starting fresh",
-                        checkpoint_version,
-                        VERSION,
+                schema = checkpoint.get("store_schema", 1)
+                if schema != STORE_SCHEMA_VERSION:
+                    stale_tag = f"legacy-v{schema}"
+                    _LOGGER.warning(
+                        "Stored segments are from store schema %s (current %s); archiving "
+                        "them and relearning from recorder history",
+                        schema, STORE_SCHEMA_VERSION,
                     )
-                    await async_delete_checkpoint(self.hass, self.entry.entry_id)
-                    # Also delete old segments and model to force fresh start
-                    await self._async_delete_old_data()
-                    self.existing_segments = []
-                    self.existing_model = None
-                    self.last_processed_timestamp = None
-                    return
-                
-                # Check if config has changed
-                current_config_hash = self._calculate_config_hash()
-                checkpoint_config_hash = checkpoint.get("config_hash", "")
-                
-                if checkpoint_config_hash != current_config_hash:
-                    _LOGGER.info(
-                        "Config changed (hash mismatch), invalidating checkpoint and starting fresh"
-                    )
-                    await async_delete_checkpoint(self.hass, self.entry.entry_id)
-                    # Also delete old segments and model to force fresh start
-                    await self._async_delete_old_data()
-                    self.existing_segments = []
-                    self.existing_model = None
-                    self.last_processed_timestamp = None
-                    return
-                
-                # Load timestamp
-                if "last_processed_timestamp" in checkpoint:
-                    timestamp = checkpoint["last_processed_timestamp"]
-                    if isinstance(timestamp, str):
-                        timestamp = datetime.fromisoformat(timestamp)
-                    self.last_processed_timestamp = timestamp
-                    _LOGGER.info(
-                        "Loaded checkpoint: last processed at %s",
-                        self.last_processed_timestamp,
-                    )
-                
-                # Validate timestamp is reasonable (not in future, not too old)
-                now = dt_util.utcnow()
-                if self.last_processed_timestamp:
-                    if self.last_processed_timestamp > now:
-                        _LOGGER.warning(
-                            "Checkpoint timestamp is in the future, invalidating"
-                        )
-                        await async_delete_checkpoint(self.hass, self.entry.entry_id)
-                        self.last_processed_timestamp = None
-                    elif self.last_processed_timestamp < now - timedelta(days=365):
-                        _LOGGER.warning(
-                            "Checkpoint timestamp is too old (>1 year), invalidating"
-                        )
-                        await async_delete_checkpoint(self.hass, self.entry.entry_id)
-                        self.last_processed_timestamp = None
+                elif checkpoint.get("config_hash", "") != self._calculate_config_hash():
+                    stale_tag = f"config-{str(checkpoint.get('config_hash', ''))[:8] or 'old'}"
+                    _LOGGER.info("Configuration changed; archiving stored segments and relearning")
+            else:
+                # No checkpoint: any leftover segments are of unknown provenance.
+                stale_tag = "orphaned"
+
+            if stale_tag:
+                await async_archive_entry_files(self.hass, self.entry.entry_id, stale_tag)
+                self.existing_segments = []
+                self.existing_model = None
+                self.last_processed_timestamp = None
+                return
+
+            # Load timestamp
+            if "last_processed_timestamp" in checkpoint:
+                timestamp = checkpoint["last_processed_timestamp"]
+                if isinstance(timestamp, str):
+                    timestamp = datetime.fromisoformat(timestamp)
+                self.last_processed_timestamp = timestamp
+                _LOGGER.info(
+                    "Loaded checkpoint: last processed at %s",
+                    self.last_processed_timestamp,
+                )
             
+            # Validate timestamp is reasonable (not in future, not too old)
+            now = dt_util.utcnow()
+            if self.last_processed_timestamp:
+                if self.last_processed_timestamp > now:
+                    _LOGGER.warning(
+                        "Checkpoint timestamp is in the future, invalidating"
+                    )
+                    await async_delete_checkpoint(self.hass, self.entry.entry_id)
+                    self.last_processed_timestamp = None
+                elif self.last_processed_timestamp < now - timedelta(days=365):
+                    _LOGGER.warning(
+                        "Checkpoint timestamp is too old (>1 year), invalidating"
+                    )
+                    await async_delete_checkpoint(self.hass, self.entry.entry_id)
+                    self.last_processed_timestamp = None
+        
             # Load existing segments and model
             self.existing_segments = await async_load_segments(self.hass, self.entry.entry_id)
             self.existing_model = await async_load_model(self.hass, self.entry.entry_id)
@@ -309,36 +302,29 @@ class IntelligentHVACCoordinator(DataUpdateCoordinator):
                     "2) Entities are new, 3) Recorder is not enabled"
                 )
             
-            # Resample to uniform timesteps
-            self.resampled_data = {}
-            for entity_id, records in history_data.items():
-                if records:
-                    resampled = resample_to_uniform_timesteps(
-                        records,
-                        start_time,
-                        end_time,
-                        self.sampling_interval,
-                        entity_id=entity_id,  # Pass entity_id for climate entity detection
-                    )
-                    if resampled:
-                        self.resampled_data[entity_id] = resampled
-                        _LOGGER.info(
-                            "Resampled %s: %d records -> %d uniform timesteps",
-                            entity_id,
-                            len(records),
-                            len(resampled),
+            # Resample to uniform timesteps (CPU-bound: run off the event loop)
+            sampling = self.sampling_interval
+
+            def _resample_all() -> dict[str, list[dict[str, Any]]]:
+                out = {}
+                for entity_id, records in history_data.items():
+                    if records:
+                        resampled = resample_to_uniform_timesteps(
+                            records, start_time, end_time, sampling, entity_id=entity_id
                         )
-                    else:
-                        _LOGGER.warning(
-                            "Resampling %s produced no results (all values may be 'unknown')",
-                            entity_id,
-                        )
-                else:
-                    _LOGGER.warning(
-                        "No history records for %s - check if entity exists and has history",
-                        entity_id,
-                    )
-            
+                        if resampled:
+                            out[entity_id] = resampled
+                return out
+
+            self.resampled_data = await self.hass.async_add_executor_job(_resample_all)
+            for entity_id in history_data:
+                _LOGGER.debug(
+                    "Resampled %s: %d records -> %d timesteps",
+                    entity_id,
+                    len(history_data[entity_id] or []),
+                    len(self.resampled_data.get(entity_id, [])),
+                )
+
             # Calculate normalized indoor temperature
             # Include both climate_entity (if it has temperature) and indoor_sensors
             all_indoor_entities = []
@@ -408,7 +394,8 @@ class IntelligentHVACCoordinator(DataUpdateCoordinator):
                     if self.indoor_sensors:
                         all_indoor_entities.extend(self.indoor_sensors)
                     
-                    new_segments = identify_segments(
+                    new_segments = await self.hass.async_add_executor_job(
+                        identify_segments,
                         self.resampled_data,
                         self.climate_entity,
                         all_indoor_entities,
@@ -431,7 +418,8 @@ class IntelligentHVACCoordinator(DataUpdateCoordinator):
             # Step 3: Learn thermal model from all segments
             if all_segments:
                 try:
-                    self.existing_model = learn_thermal_model(
+                    self.existing_model = await self.hass.async_add_executor_job(
+                        learn_thermal_model,
                         all_segments,
                         self.training_days,
                         self.first_data_timestamp,
@@ -495,25 +483,19 @@ class IntelligentHVACCoordinator(DataUpdateCoordinator):
         existing: list[ThermalSegment],
         new: list[ThermalSegment],
     ) -> list[ThermalSegment]:
-        """Merge new segments with existing, removing duplicates."""
-        # Create a set of existing segment keys (start_time, end_time, type)
-        existing_keys = {
-            (seg.start_time, seg.end_time, seg.type) for seg in existing
+        """Merge new complete segments into the store and prune old ones.
+
+        Keyed by (start_time, type): with the clock-anchored grid a run always
+        starts at the same timestamp, so a re-fetched run replaces its copy.
+        """
+        cutoff = dt_util.utcnow() - timedelta(days=SEGMENT_RETENTION_DAYS)
+        by_key: dict[tuple, ThermalSegment] = {
+            (seg.start_time, seg.type): seg for seg in existing if seg.start_time >= cutoff
         }
-        
-        # Add new segments that don't already exist
-        merged = list(existing)
         for seg in new:
-            key = (seg.start_time, seg.end_time, seg.type)
-            if key not in existing_keys:
-                merged.append(seg)
-                existing_keys.add(key)
-        
-        # Sort by start_time
-        merged.sort(key=lambda s: s.start_time)
-        
-        return merged
-    
+            by_key[(seg.start_time, seg.type)] = seg
+        return sorted(by_key.values(), key=lambda s: s.start_time)
+
     async def _async_delete_old_data(self) -> None:
         """Delete old segments and model files when version/config changes."""
         # Note: We don't need to explicitly delete files - they'll be overwritten

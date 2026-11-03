@@ -1,302 +1,111 @@
-"""Uniform time series resampling."""
+"""Uniform time series resampling.
+
+Two properties matter for learning and are tested:
+
+* Records are ordered by ``last_updated``, not ``last_changed``. A climate
+  entity's ``hvac_action`` (heating/idle) is an *attribute*; when it flips the
+  state (the HVAC mode) is unchanged, so every record in a heating season shares
+  one ``last_changed``. Keying by it collapsed thousands of records into one per
+  mode change, so the furnace cycling was invisible.
+* The grid is anchored to absolute clock times (multiples of the interval since
+  the epoch). Overlapping fetch windows then produce identical timestamps, so
+  the same physical segment is recognised as the same segment on every update.
+"""
+from __future__ import annotations
+
+import bisect
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import homeassistant.util.dt as dt_util
 
 _LOGGER = logging.getLogger(__name__)
 
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_INVALID = ("unknown", "unavailable", "none", "", "n/a", "na")
+
+
+def anchor_time(t: datetime, interval_minutes: float, *, ceil: bool = False) -> datetime:
+    """Snap a time to the interval grid (floor by default)."""
+    step = interval_minutes * 60
+    secs = (dt_util.as_utc(t) - _EPOCH).total_seconds()
+    n = int(secs // step) + (1 if ceil and secs % step else 0)
+    return _EPOCH + timedelta(seconds=n * step)
+
+
+def _record_time(record: dict[str, Any]) -> datetime:
+    return dt_util.as_utc(record.get("last_updated") or record["last_changed"])
+
+
+def _parse_state(state: Any) -> float | None:
+    if isinstance(state, (int, float)):
+        return float(state)
+    if state is None or str(state).strip().lower() in _INVALID:
+        return None
+    try:
+        return float(state)
+    except (TypeError, ValueError):
+        return None
+
 
 def resample_to_uniform_timesteps(
     history_records: list[dict[str, Any]],
     start_time: datetime,
     end_time: datetime,
-    interval_minutes: int,
+    interval_minutes: float,
     entity_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    """
-    Resample irregular history data to uniform timesteps using linear interpolation.
-    
-    Args:
-        history_records: List of history records with 'state', 'last_changed', 'attributes'
-        start_time: Start of time range
-        end_time: End of time range
-        interval_minutes: Target interval in minutes (e.g., 5 for 5-minute intervals)
-    
-    Returns:
-        List of resampled records with uniform timesteps
+    """Resample irregular history onto a uniform, clock-anchored grid.
+
+    Climate and weather entities (string states, data in attributes) are
+    forward-filled: each timestep gets the record in effect at that moment,
+    never a future one. Numeric sensors are linearly interpolated between the
+    surrounding valid readings; timesteps outside the readings get the nearest
+    reading only within one interval, otherwise they are skipped (gaps stay
+    gaps).
     """
     if not history_records:
-        _LOGGER.warning("No history records to resample")
         return []
-    
-    # Convert to UTC
-    start_utc = dt_util.as_utc(start_time)
-    end_utc = dt_util.as_utc(end_time)
-    
-    # Generate uniform timesteps
-    interval = timedelta(minutes=interval_minutes)
-    timesteps = []
-    current = start_utc
-    while current <= end_utc:
-        timesteps.append(current)
-        current += interval
-    
-    if not timesteps:
+
+    records = sorted(history_records, key=_record_time)
+    times = [_record_time(r) for r in records]
+    step = timedelta(minutes=interval_minutes)
+
+    t = anchor_time(start_time, interval_minutes, ceil=True)
+    end = dt_util.as_utc(end_time)
+    out: list[dict[str, Any]] = []
+
+    special = bool(entity_id) and entity_id.split(".", 1)[0] in ("climate", "weather")
+
+    if special:
+        while t <= end:
+            i = bisect.bisect_right(times, t) - 1
+            if i >= 0:
+                rec = records[i]
+                out.append({"timestamp": t, "state": rec.get("state", "unknown"),
+                            "attributes": rec.get("attributes") or {}})
+            t += step
+        return out
+
+    valid = [(tm, v, r) for tm, r in zip(times, records) if (v := _parse_state(r.get("state"))) is not None]
+    if not valid:
         return []
-    
-    # Build lookup for history records by timestamp
-    history_by_time = {}
-    for record in history_records:
-        # Use last_changed as the timestamp
-        ts = dt_util.as_utc(record["last_changed"])
-        history_by_time[ts] = record
-    
-    # Get sorted timestamps
-    sorted_times = sorted(history_by_time.keys())
-    
-    if not sorted_times:
-        _LOGGER.warning("No valid timestamps in history records")
-        return []
-    
-    resampled = []
-    
-    # Check if this is a climate or weather entity (for special handling)
-    # These entities have string states and important data in attributes
-    is_special_entity = entity_id and (
-        entity_id.startswith("climate.") or entity_id.startswith("weather.")
-    )
-    
-    for timestep in timesteps:
-        if is_special_entity:
-            # For climate entities, preserve most recent state and attributes
-            # Don't try to interpolate - just use the nearest record
-            record = _get_nearest_record(timestep, sorted_times, history_by_time)
-            if record:
-                resampled.append({
-                    "timestamp": timestep,
-                    "state": record.get("state", "unknown"),
-                    "attributes": record.get("attributes", {}),
-                })
-        else:
-            # For sensors, interpolate numeric values
-            value = _interpolate_value(
-                timestep,
-                sorted_times,
-                history_by_time,
-            )
-            
-            # Only add if we have a valid value (don't add None/unknown)
-            if value is not None:
-                resampled.append({
-                    "timestamp": timestep,
-                    "state": value,
-                    "attributes": _get_attributes_at_time(
-                        timestep,
-                        sorted_times,
-                        history_by_time,
-                    ),
-                })
-        # Note: We skip timesteps with no valid data (gaps are OK)
-    
-    _LOGGER.debug(
-        "Resampled %d records to %d uniform timesteps (%d minute intervals)",
-        len(history_records),
-        len(resampled),
-        interval_minutes,
-    )
-    
-    return resampled
-
-
-def _interpolate_value(
-    target_time: datetime,
-    sorted_times: list[datetime],
-    history_by_time: dict[datetime, dict[str, Any]],
-) -> float | None:
-    """Interpolate state value at target_time using linear interpolation."""
-    target_utc = dt_util.as_utc(target_time)
-    
-    # Find the two points to interpolate between
-    before = None
-    after = None
-    
-    for i, ts in enumerate(sorted_times):
-        if ts <= target_utc:
-            before = ts
-            if i + 1 < len(sorted_times):
-                after = sorted_times[i + 1]
-        else:
-            if before is None:
-                # Target is before first record - use first record
-                after = ts
-            break
-    
-    # Get state values
-    try:
-        if before is not None and after is not None:
-            # Interpolate between two points
-            before_record = history_by_time[before]
-            after_record = history_by_time[after]
-            
-            before_state = _parse_state(before_record["state"])
-            after_state = _parse_state(after_record["state"])
-            
-            # If either is None, try to find nearest valid value
-            if before_state is None and after_state is None:
-                # Look for nearest valid value in either direction
-                return _find_nearest_valid_value(
-                    target_utc,
-                    sorted_times,
-                    history_by_time,
-                )
-            
-            # If one is None, use the other
-            if before_state is None:
-                return after_state
-            if after_state is None:
-                return before_state
-            
-            # Both valid - linear interpolation
-            before_ts = dt_util.as_timestamp(before)
-            after_ts = dt_util.as_timestamp(after)
-            target_ts = dt_util.as_timestamp(target_utc)
-            
-            if after_ts == before_ts:
-                return before_state
-            
-            ratio = (target_ts - before_ts) / (after_ts - before_ts)
-            interpolated = before_state + (after_state - before_state) * ratio
-            
-            return interpolated
-            
-        elif before is not None:
-            # Use last known value (if valid)
-            state = _parse_state(history_by_time[before]["state"])
-            if state is not None:
-                return state
-            # If invalid, look for nearest valid
-            return _find_nearest_valid_value(
-                target_utc,
-                sorted_times,
-                history_by_time,
-            )
-            
-        elif after is not None:
-            # Use first known value (if valid)
-            state = _parse_state(history_by_time[after]["state"])
-            if state is not None:
-                return state
-            # If invalid, look for nearest valid
-            return _find_nearest_valid_value(
-                target_utc,
-                sorted_times,
-                history_by_time,
-            )
-            
-    except (ValueError, TypeError, KeyError) as err:
-        _LOGGER.debug("Error interpolating value at %s: %s", target_time, err)
-        return None
-    
-    return None
-
-
-def _find_nearest_valid_value(
-    target_time: datetime,
-    sorted_times: list[datetime],
-    history_by_time: dict[datetime, dict[str, Any]],
-    max_gap_minutes: int = 30,
-) -> float | None:
-    """Find nearest valid value within max_gap_minutes."""
-    target_utc = dt_util.as_utc(target_time)
-    target_ts = dt_util.as_timestamp(target_utc)
-    max_gap_seconds = max_gap_minutes * 60
-    
-    nearest = None
-    min_diff = None
-    
-    for ts in sorted_times:
-        state = _parse_state(history_by_time[ts]["state"])
-        if state is None:
-            continue
-        
-        diff = abs(dt_util.as_timestamp(ts) - target_ts)
-        if diff <= max_gap_seconds:
-            if min_diff is None or diff < min_diff:
-                min_diff = diff
-                nearest = state
-    
-    return nearest
-
-
-def _parse_state(state: str | float | int | None) -> float | None:
-    """Parse state to float, handling 'unknown', 'unavailable', etc."""
-    if state is None:
-        return None
-    
-    # If already a number, return it
-    if isinstance(state, (int, float)):
-        return float(state)
-    
-    # Convert to string and check for invalid states
-    state_str = str(state).strip().lower()
-    if state_str in ("unknown", "unavailable", "none", "", "n/a", "na"):
-        return None
-    
-    try:
-        return float(state)
-    except (ValueError, TypeError):
-        return None
-
-
-def _get_nearest_record(
-    target_time: datetime,
-    sorted_times: list[datetime],
-    history_by_time: dict[datetime, dict[str, Any]],
-) -> dict[str, Any] | None:
-    """Get the nearest history record to target_time (for climate entities)."""
-    target_utc = dt_util.as_utc(target_time)
-    
-    # Find the record with timestamp <= target_time (most recent before or at target)
-    nearest = None
-    nearest_time = None
-    
-    for ts in sorted_times:
-        if ts <= target_utc:
-            nearest_time = ts
-            nearest = history_by_time[ts]
-        else:
-            break
-    
-    # If no record before target, use first record after
-    if nearest is None and sorted_times:
-        nearest_time = sorted_times[0]
-        nearest = history_by_time[nearest_time]
-    
-    return nearest
-
-
-def _get_attributes_at_time(
-    target_time: datetime,
-    sorted_times: list[datetime],
-    history_by_time: dict[datetime, dict[str, Any]],
-) -> dict[str, Any]:
-    """Get attributes at target_time (use nearest record)."""
-    target_utc = dt_util.as_utc(target_time)
-    
-    # Find nearest record
-    nearest = None
-    min_diff = None
-    
-    for ts in sorted_times:
-        diff = abs((dt_util.as_utc(ts) - target_utc).total_seconds())
-        if min_diff is None or diff < min_diff:
-            min_diff = diff
-            nearest = ts
-    
-    if nearest is not None:
-        return history_by_time[nearest].get("attributes", {})
-    
-    return {}
-
+    vtimes = [x[0] for x in valid]
+    while t <= end:
+        j = bisect.bisect_right(vtimes, t)
+        value: float | None = None
+        attrs: dict[str, Any] = {}
+        if 0 < j < len(valid):
+            (t0, v0, r0), (t1, v1, _) = valid[j - 1], valid[j]
+            span = (t1 - t0).total_seconds()
+            frac = (t - t0).total_seconds() / span if span > 0 else 0.0
+            value, attrs = v0 + (v1 - v0) * frac, r0.get("attributes") or {}
+        elif j == len(valid):  # after the last reading: hold it (sensors report on change)
+            value, attrs = valid[-1][1], valid[-1][2].get("attributes") or {}
+        elif j == 0 and (vtimes[0] - t) <= step:
+            value, attrs = valid[0][1], valid[0][2].get("attributes") or {}
+        if value is not None:
+            out.append({"timestamp": t, "state": value, "attributes": attrs})
+        t += step
+    return out
