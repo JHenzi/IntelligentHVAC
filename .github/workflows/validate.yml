@@ -8,6 +8,9 @@ on:
     - cron: "0 6 * * 1"   # weekly: catch breakage from new HA releases
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   hassfest:
     name: hassfest
