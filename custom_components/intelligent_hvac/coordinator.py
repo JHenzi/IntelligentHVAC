@@ -358,9 +358,11 @@ class IntelligentHVACCoordinator(DataUpdateCoordinator):
                 )
             
             if normalized_temp is None:
-                _LOGGER.error(
-                    "Failed to calculate normalized temperature from entities: %s. "
-                    "Check if entities exist, are online, and have numeric temperature values.",
+                # Normal right after an HA start (thermostat platform not loaded yet);
+                # retried on the next update. Persistent cases show on the status sensor.
+                _LOGGER.warning(
+                    "No indoor temperature yet from %s; will retry on the next update. "
+                    "If this persists, check the entities exist and report numeric temperatures.",
                     all_indoor_entities,
                 )
             else:
