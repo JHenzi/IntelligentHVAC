@@ -10,4 +10,4 @@ services:
     volumes:
       - ./config:/config
       - /etc/localtime:/etc/localtime:ro
-    restart: "no"
+    restart: unless-stopped

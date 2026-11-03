@@ -53,7 +53,7 @@ dev/sandbox/prepare.sh                    # build dev/sandbox/config from the re
 python3 dev/sandbox/e2e.py --restart      # automated checks; exit code = failures
 ```
 
-Log in at http://localhost:8125 as `sandbox` / `sandbox-only-password` (created by `e2e.py`) to poke at things by hand. Re-run `prepare.sh` + restart the container after code changes. To start from scratch: `docker compose down && rm -rf dev/sandbox/config`.
+The sandbox restarts with Docker (`restart: unless-stopped`); stop it for good with `docker compose down`. Log in at http://localhost:8125 as `sandbox` / `sandbox-only-password` (created by `e2e.py`) to poke at things by hand. Re-run `prepare.sh` + restart the container after code changes. To start from scratch: `docker compose down && rm -rf dev/sandbox/config`.
 
 > **Never point the sandbox at a copy of your production config.** It would sign in to your real thermostat and cloud accounts and run your real automations a second time.
 
