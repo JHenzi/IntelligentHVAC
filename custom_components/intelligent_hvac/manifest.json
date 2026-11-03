@@ -1,6 +1,7 @@
 {
   "domain": "intelligent_hvac",
   "name": "Intelligent HVAC",
+  "categories": ["climate.thermostats_heating"],
   "codeowners": ["@JHenzi"],
   "config_flow": true,
   "dependencies": ["recorder"],
