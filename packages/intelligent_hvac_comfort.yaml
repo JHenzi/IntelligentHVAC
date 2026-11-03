@@ -19,7 +19,7 @@
 #   3. Find & replace the entity IDs below if yours differ:
 #        climate.thermostat   -> your thermostat
 #        weather.home         -> your weather entity (daily forecast support)
-#        sensor.time_to_target_5degf_heat / _cool -> Intelligent HVAC sensors
+#        sensor.intelligent_hvac_time_to_target_5degf_heat / _cool -> Intelligent HVAC sensors
 #   4. Restart Home Assistant.
 # =============================================================================
 
@@ -138,11 +138,11 @@ template:
         # Prefers a dedicated outdoor sensor, falls back to your weather entity.
         # EDIT the two entity IDs below.
         state: >
-          {% set sensor_temp = states('sensor.outdoor_temperature') | float(none) %}
+          {% set sensor_temp = states('sensor.my_outdoor_temperature') | float(none) %}
           {% set weather_temp = state_attr('weather.home', 'temperature') | float(none) %}
           {{ sensor_temp if sensor_temp is not none else weather_temp }}
         availability: >
-          {% set sensor_temp = states('sensor.outdoor_temperature') | float(none) %}
+          {% set sensor_temp = states('sensor.my_outdoor_temperature') | float(none) %}
           {% set weather_temp = state_attr('weather.home', 'temperature') | float(none) %}
           {{ sensor_temp is not none or weather_temp is not none }}
   - binary_sensor:
@@ -182,7 +182,7 @@ script:
             {% endif %}
           target: "{{ states('input_number.target_temperature') | float(70) }}"
           delta: "{{ (target | float - setback | float) | abs }}"
-          base: "{{ states('sensor.time_to_target_5degf_heat') | float(125) }}"
+          base: "{{ states('sensor.intelligent_hvac_time_to_target_5degf_heat') | float(125) }}"
           buffer: "{{ states('input_number.recovery_time_buffer') | float(5) }}"
           # Model gives minutes per 5°F; scale linearly to the delta we actually need.
           scaled: >-
@@ -221,13 +221,19 @@ automation:
     triggers:
       - trigger: time
         at: "00:00:00"
+    conditions:
+      # Skip quietly (instead of erroring) when the weather entity is down.
+      - condition: template
+        value_template: "{{ states('weather.home') not in ['unknown', 'unavailable'] }}"
     actions:
       - action: weather.get_forecasts
         target: { entity_id: weather.home }
         data: { type: daily }
         response_variable: forecast
+        continue_on_error: true
       - variables:
-          high: "{{ forecast['weather.home']['forecast'][0]['temperature'] | float(none) }}"
+          days: "{{ ((forecast | default({})).get('weather.home', {})).get('forecast', []) }}"
+          high: "{{ days[0].temperature | float(none) if days | count > 0 else none }}"
       - choose:
           - conditions: "{{ high is not none and high > states('input_number.forecast_cool_above') | float(74) }}"
             sequence:
@@ -254,6 +260,9 @@ automation:
       - condition: state
         entity_id: climate.thermostat
         state: [cool, heat_cool]
+      # Only once the model has a recommendation (integration loaded + trained).
+      - condition: template
+        value_template: "{{ states('sensor.intelligent_hvac_recommended_cooling_setpoint') | is_number }}"
     actions:
       - action: intelligent_hvac.apply_smart_cooling_setpoint
         data: { climate_entity: climate.thermostat }
@@ -292,7 +301,7 @@ automation:
         at: "00:00:01"
     conditions:
       - condition: numeric_state
-        entity_id: sensor.time_to_target_5degf_heat
+        entity_id: sensor.intelligent_hvac_time_to_target_5degf_heat
         above: 0
     actions:
       - action: script.intelligent_hvac_update_recovery
@@ -307,12 +316,12 @@ automation:
     triggers:
       - trigger: state
         entity_id:
-          - sensor.time_to_target_5degf_heat
+          - sensor.intelligent_hvac_time_to_target_5degf_heat
           - input_number.target_temperature
           - input_datetime.target_wake_up_time
     conditions:
       - condition: numeric_state
-        entity_id: sensor.time_to_target_5degf_heat
+        entity_id: sensor.intelligent_hvac_time_to_target_5degf_heat
         above: 0
       - condition: time
         after: "10:00:00"

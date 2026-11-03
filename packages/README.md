@@ -37,8 +37,8 @@ The recovery start time is not recalculated between 05:00 and 10:00, so a late u
    |---|---|
    | `climate.thermostat` | your thermostat |
    | `weather.home` | a weather entity that supports daily forecasts |
-   | `sensor.outdoor_temperature` | an outdoor sensor, if you have one (optional — falls back to the weather entity) |
-   | `sensor.time_to_target_5degf_heat` | the integration's *Time to Target 5°F Heat* sensor (check Developer Tools → States) |
+   | `sensor.my_outdoor_temperature` | an outdoor sensor, if you have one (optional — falls back to the weather entity) |
+   | `sensor.intelligent_hvac_time_to_target_5degf_heat` | the integration's *Time to Target 5°F Heat* sensor (check Developer Tools → States) |
 
 5. Check configuration (Developer Tools → YAML) and restart Home Assistant.
 6. Add the dashboard: see [../dashboards/README.md](../dashboards/README.md).

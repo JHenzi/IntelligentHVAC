@@ -5,6 +5,7 @@ from typing import Any
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceEntryType
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -167,13 +168,18 @@ class IntelligentHVACSensor(CoordinatorEntity, SensorEntity):
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
+        # Entity IDs become sensor.intelligent_hvac_<name> on a fresh install,
+        # which is what the comfort package and dashboard reference.
+        self._attr_has_entity_name = True
         self._attr_name = name
         self._attr_unique_id = f"{entry.entry_id}_{unique_id}"
         self._attr_icon = icon
         self._attr_device_info = {
             "identifiers": {(DOMAIN, entry.entry_id)},
-            "name": entry.title,
+            "name": "Intelligent HVAC",
             "manufacturer": "Intelligent HVAC",
+            "model": entry.title,
+            "entry_type": DeviceEntryType.SERVICE,
         }
 
 

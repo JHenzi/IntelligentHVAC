@@ -46,7 +46,7 @@ So the model estimates cooling time from:
 
 ## Sensors And What They Mean
 
-### `sensor.cooling_holding_margin`
+### `sensor.intelligent_hvac_cooling_holding_margin`
 
 This estimates net cooling headroom in `°F/hr`.
 
@@ -61,13 +61,13 @@ Interpretation:
 
 This is one of the main signals used for deciding whether nighttime setback is safe.
 
-### `sensor.recommended_cooling_setpoint`
+### `sensor.intelligent_hvac_recommended_cooling_setpoint`
 
 This is the temperature `intelligent_hvac` currently wants the thermostat to use.
 
 It is not just a copy of the thermostat setpoint. It is the output of the integration's decision logic.
 
-### `sensor.cooling_strategy`
+### `sensor.intelligent_hvac_cooling_strategy`
 
 This tells you why the integration picked the current recommendation.
 
@@ -90,7 +90,7 @@ Current strategies include:
 - `precool_now`
   Conditions are hard enough that the system should cool more aggressively now
 
-### `sensor.precool_lead_time`
+### `sensor.intelligent_hvac_pre_cool_lead_time`
 
 This sensor answers:
 
@@ -295,10 +295,10 @@ If you have only one Intelligent HVAC entry installed, the service can also be c
 
 Use these entities together:
 
-- `sensor.cooling_strategy`
-- `sensor.recommended_cooling_setpoint`
-- `sensor.cooling_holding_margin`
-- `sensor.precool_lead_time`
+- `sensor.intelligent_hvac_cooling_strategy`
+- `sensor.intelligent_hvac_recommended_cooling_setpoint`
+- `sensor.intelligent_hvac_cooling_holding_margin`
+- `sensor.intelligent_hvac_pre_cool_lead_time`
 - `climate.thermostat`
 
 That gives you:
@@ -309,7 +309,7 @@ That gives you:
 - how much recovery lead time is needed
 - what the thermostat is actually set to
 
-When outdoor weather is mild, look for `sensor.cooling_strategy` to show
+When outdoor weather is mild, look for `sensor.intelligent_hvac_cooling_strategy` to show
 `open_windows` or `coast_no_cooling`.
 That means the controller thinks the home can naturally lose heat and does not need aggressive AC right now.
 

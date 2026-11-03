@@ -6,8 +6,8 @@ views:
   icon: mdi:thermostat
   cards:
   - type: markdown
-    content: "## \U0001F3E0 Smart Recovery HVAC System\n**Model Status:** {{ states('sensor.thermal_model_status')\
-      \ }} | \n**Confidence:** {{ states('sensor.thermal_model_confidence') }}%\n**Advice:** {{ state_attr('sensor.cooling_strategy',\
+    content: "## \U0001F3E0 Smart Recovery HVAC System\n**Model Status:** {{ states('sensor.intelligent_hvac_thermal_model_status')\
+      \ }} | \n**Confidence:** {{ states('sensor.intelligent_hvac_thermal_model_confidence') }}%\n**Advice:** {{ state_attr('sensor.intelligent_hvac_cooling_strategy',\
       \ 'guidance_message') }}"
   - type: markdown
     content: '## 📊 Temperature History
@@ -29,14 +29,14 @@ views:
     hours_to_show: 24
     refresh_interval: 60
     entities:
-    - entity: sensor.time_to_target_5degf_heat
-    - entity: sensor.time_to_target_5degf_cool
+    - entity: sensor.intelligent_hvac_time_to_target_5degf_heat
+    - entity: sensor.intelligent_hvac_time_to_target_5degf_cool
   - type: history-graph
     title: Recovery Time Trend (7 days)
     hours_to_show: 168
     refresh_interval: 300
     entities:
-    - entity: sensor.time_to_target_5degf_heat
+    - entity: sensor.intelligent_hvac_time_to_target_5degf_heat
       name: Time to Target 5°F
   - type: vertical-stack
     cards:
@@ -61,7 +61,7 @@ views:
         icon: mdi:timer-outline
     - type: entities
       entities:
-      - entity: sensor.recommended_cooling_setpoint
+      - entity: sensor.intelligent_hvac_recommended_cooling_setpoint
       title: Cooling
       state_color: true
       show_header_toggle: false
@@ -117,22 +117,22 @@ views:
     - type: entities
       title: 🧠 Intelligent HVAC Model
       entities:
-      - entity: sensor.thermal_model_status
+      - entity: sensor.intelligent_hvac_thermal_model_status
         name: Model Status
-      - entity: sensor.thermal_model_confidence
+      - entity: sensor.intelligent_hvac_thermal_model_confidence
         name: Model Confidence (%)
-      - entity: sensor.cooling_strategy
+      - entity: sensor.intelligent_hvac_cooling_strategy
         name: Cooling Strategy
-      - entity: sensor.recommended_cooling_setpoint
+      - entity: sensor.intelligent_hvac_recommended_cooling_setpoint
         name: Recommended Cooling Setpoint
-      - entity: sensor.cooling_holding_margin
+      - entity: sensor.intelligent_hvac_cooling_holding_margin
         name: Cooling Holding Margin
-      - entity: sensor.pre_cool_lead_time
+      - entity: sensor.intelligent_hvac_pre_cool_lead_time
         name: Pre-cool Lead Time
-      - entity: sensor.time_to_target_5degf_cool
+      - entity: sensor.intelligent_hvac_time_to_target_5degf_cool
         name: Time to Target 5°F Cool
         icon: mdi:timer-outline
-      - entity: sensor.time_to_target_5degf_heat
+      - entity: sensor.intelligent_hvac_time_to_target_5degf_heat
         name: Time to Target 5°F Heat
         icon: mdi:timer
   - type: vertical-stack
@@ -219,12 +219,12 @@ views:
     show_name: true
     show_state: true
     show_icon: true
-    entity: sensor.learned_indoor_temperature
+    entity: sensor.intelligent_hvac_learned_indoor_temperature
   - type: entity
     show_name: true
     show_state: true
     show_icon: true
-    entity: sensor.recommended_cooling_setpoint
+    entity: sensor.intelligent_hvac_recommended_cooling_setpoint
   - type: entity
     show_name: true
     show_state: true
