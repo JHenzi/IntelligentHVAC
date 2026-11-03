@@ -103,3 +103,13 @@ def test_indoor_sensor_listed_twice_is_not_double_counted():
     once = identify_segments(resampled, CLIMATE, [INDOOR], OUTDOOR, 5)
     twice = identify_segments(resampled, CLIMATE, [INDOOR, INDOOR], OUTDOOR, 5)
     assert [s.start_indoor_temp for s in once] == [s.start_indoor_temp for s in twice]
+
+
+def test_short_furnace_cycle_kept_short_idle_dropped():
+    actions = [(0, "idle"), (60, "heating"), (65, "idle"), (70, "heating"), (75, "idle"), (200, "heating")]
+    pts = [(0, 69.0), (200, 69.0)]
+    hist = {CLIMATE: _climate_history(actions), INDOOR: _sensor_history(pts), OUTDOOR: _sensor_history(OUTDOOR_PTS)}
+    resampled = {e: resample_to_uniform_timesteps(r, T0 - timedelta(minutes=30), T0 + timedelta(minutes=300), 5, entity_id=e)
+                 for e, r in hist.items()}
+    segs = identify_segments(resampled, CLIMATE, [INDOOR], OUTDOOR, 5)
+    assert [s.duration_minutes for s in segs if s.type == "Active_Heating"] == [5, 5]

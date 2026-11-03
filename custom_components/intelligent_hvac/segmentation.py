@@ -10,6 +10,8 @@ Rules (tested in tests/test_segmentation.py):
 * Heating/cooling runs are typed by the action, not by the measured rate: a
   10-minute furnace cycle that the thermostat's 1°F resolution shows as +0°F is
   still a heating run, and its duration matters (duty cycle).
+* Active (heating/cooling) runs are kept down to one sample; idle runs need
+  MIN_SEGMENT_DURATION_MINUTES.
 * No merging of adjacent runs. (The previous merge glued each heating run to the
   idle period after it while keeping the "heating" label and rate, so heating
   durations included coasting time.)
@@ -136,7 +138,10 @@ def identify_segments(
         t0, action, temp0, _ = timeline[a]
         t1, _, temp1, _ = timeline[b]
         minutes = (t1 - t0).total_seconds() / 60.0
-        if minutes < MIN_SEGMENT_DURATION_MINUTES:
+        active = action.lower() in ("heating", "cooling")
+        # Furnace cycles are often < 10 min; every minute of run time counts for
+        # duty cycle, so active runs are kept down to one sample.
+        if minutes < (sampling_interval_minutes if active else MIN_SEGMENT_DURATION_MINUTES):
             continue
         outs = [o for _, _, _, o in timeline[a:b + 1] if o is not None]
         avg_out = sum(outs) / len(outs) if outs else None
