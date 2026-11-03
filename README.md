@@ -151,9 +151,7 @@ Read [documentation/ARCHITECTURE.md](documentation/ARCHITECTURE.md) for the laye
 
 ## 🗺️ Roadmap
 
-- Native helper entities so the comfort package becomes optional
-- Heating-season guidance to match the cooling side
-- HACS default-repository submission
+The heating model is being rebuilt on physics (heat-loss + heating-power) and backtested against real recoveries; until that lands, the comfort package includes a **fixed-lead fallback heat-up** so mornings are warm regardless. Details and status: [documentation/ROADMAP.md](documentation/ROADMAP.md).
 
 Feedback and issues very welcome: <https://github.com/JHenzi/IntelligentHVAC/issues>
 

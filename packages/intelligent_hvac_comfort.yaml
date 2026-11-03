@@ -53,6 +53,23 @@ input_number:
     step: 1
     unit_of_measurement: min
     icon: mdi:timer-outline
+  fallback_recovery_lead:
+    # Safety net: heat-up starts at least this long before wake-up, whatever
+    # the model says. ~90 min suits most homes recovering 5°F. Set it on first run.
+    name: Fallback Recovery Lead
+    min: 30
+    max: 240
+    step: 5
+    unit_of_measurement: min
+    icon: mdi:shield-check
+  max_recovery_lead:
+    # Never start heat-up earlier than this before wake-up (caps a bad model).
+    name: Maximum Recovery Lead
+    min: 60
+    max: 360
+    step: 5
+    unit_of_measurement: min
+    icon: mdi:timer-alert-outline
   nighttime_setback_temperature:
     name: Nighttime Setback Temperature
     min: 55
@@ -185,9 +202,13 @@ script:
           base: "{{ states('sensor.intelligent_hvac_time_to_target_5degf_heat') | float(125) }}"
           buffer: "{{ states('input_number.recovery_time_buffer') | float(5) }}"
           # Model gives minutes per 5°F; scale linearly to the delta we actually need.
-          scaled: >-
+          raw: >-
             {{ ((base | float * (delta | float / 5.0)) + buffer | float) | round(0)
                if delta | float > 0 else buffer | float }}
+          min_lead: "{{ states('input_number.fallback_recovery_lead') | float(90) }}"
+          max_lead: "{{ states('input_number.max_recovery_lead') | float(240) }}"
+          # Never later than the fallback, never earlier than the cap.
+          scaled: "{{ [[raw | float, min_lead | float] | max, [max_lead | float, min_lead | float] | max] | min }}"
           wake: >-
             {{ states('input_datetime.target_wake_up_time')
                if states('input_datetime.target_wake_up_time') not in ['unknown', 'unavailable']
@@ -350,4 +371,46 @@ automation:
         target: { entity_id: climate.thermostat }
         data:
           temperature: "{{ states('input_number.target_temperature') | float(70) }}"
+    mode: single
+
+  # Safety net: if heat-up hasn't happened by (wake-up - fallback lead), do it
+  # now. Covers a missing/implausible model, a stale start time, or HA being
+  # down at the start minute. Level-checked every 5 min, so restarts can't skip it.
+  - id: ihvac_fallback_heat_up
+    alias: "Smart Recovery: Fallback Heat Up"
+    description: >-
+      Raises the setpoint to the target if it is still below it inside the
+      fallback window before wake-up.
+    triggers:
+      - trigger: time_pattern
+        minutes: /5
+      - trigger: homeassistant
+        event: start
+    conditions:
+      - condition: state
+        entity_id: climate.thermostat
+        state: heat
+      - condition: template
+        value_template: >-
+          {% set w = states('input_datetime.target_wake_up_time') %}
+          {% set wake = today_at(w if w not in ['unknown', 'unavailable'] else '07:00:00') %}
+          {% set lead = states('input_number.fallback_recovery_lead') | float(90) %}
+          {{ wake - timedelta(minutes=lead) <= now() < wake }}
+      - condition: template
+        value_template: >-
+          {{ state_attr('climate.thermostat', 'temperature') | float(0)
+             < states('input_number.target_temperature') | float(70) - 0.5 }}
+    actions:
+      - action: climate.set_temperature
+        target: { entity_id: climate.thermostat }
+        data:
+          temperature: "{{ states('input_number.target_temperature') | float(70) }}"
+      - action: persistent_notification.create
+        data:
+          notification_id: ihvac_fallback_heat_up
+          title: Intelligent HVAC fallback heat-up
+          message: >-
+            Smart recovery hadn't raised the setpoint by {{ now().strftime('%H:%M') }},
+            so the fallback did (target {{ states('input_number.target_temperature') }}°F).
+            Smart start time was {{ states('input_datetime.smart_recovery_start_time') }}.
     mode: single
