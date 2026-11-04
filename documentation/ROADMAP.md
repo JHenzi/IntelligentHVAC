@@ -31,6 +31,7 @@ Recorder history is usually short (21 days on that install, and climate entities
 - [x] Learning runs in the executor; linear-time segmentation — #6.
 - [ ] Indoor sensor weights honoured; option to exclude the thermostat's own reading.
 - [ ] Manual-override detection (heating and cooling); documented conflicts with Ecobee Smart Recovery / Follow Me.
+- [ ] **Passive gain looks near zero.** *Passive Gain Rate at 75°F* reads +0.01 °F/h on the real house (2026-11-04) despite 173 coasting-warming segments. A house left alone at 75°F outside should warm noticeably. Check the passive-gain fit (sign, outdoor range of the segments, whether solar/internal gains are being averaged away) before the cooling model is rebuilt on it.
 
 ## P2: broaden
 
@@ -39,3 +40,7 @@ Recorder history is usually short (21 days on that install, and climate entities
 - [ ] Native helper entities (comfort package optional)
 - [ ] Multi-stage / auxiliary heat awareness
 - [ ] HACS default repository, brands icon
+
+## Dashboard
+
+- [ ] *Rates (HVAC on / off)* card: three of the four rows have no icon, so their labels don't line up with the fourth (*Coasting, 75°F out*). Give every row an icon.
