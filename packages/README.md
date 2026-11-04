@@ -55,9 +55,15 @@ The learned model decides *when* heat-up starts, but within limits you set:
 
 - The smart start is never **earlier** than *wake − Maximum Recovery Lead* (a model that's too pessimistic can't heat the house half the night).
 - The smart start is never **later** than *wake − Fallback Recovery Lead*.
-- **Smart Recovery: Fallback Heat Up** checks every 5 minutes inside that fallback window. If the thermostat is in `heat` and still below the target, it raises the setpoint and leaves a notification. That covers a missing or implausible model, a stale start time, or HA being restarted at the start minute.
+- **Smart Recovery: Fallback Heat Up** checks every 5 minutes inside that fallback window. If the thermostat is in `heat` and still below the target, it waits a minute (so a smart start landing on the same minute wins), re-checks, then raises the setpoint and leaves a notification. That covers a missing or implausible model, a stale start time, or HA being restarted at the start minute.
 
 If you see the fallback notification often, the model isn't doing its job. Please open an issue with your Thermal Model Confidence and Time to Target values.
+
+## Nighttime setback only ever lowers
+
+At 22:00 the setback picks a temperature from the outdoor temperature (normal / moderate cold / extreme cold). It only **lowers** the setpoint. If you've already turned the thermostat down further by hand (a warm day, and you don't want the heat coming on), it leaves your setting alone instead of raising it and starting the heat.
+
+> **Thermostat schedules fight back.** Most thermostats (ecobee included, over HomeKit too) treat a setpoint change as a hold that ends at the next schedule transition. If the setpoint jumps around with no automation behind it, set the thermostat's hold action to *until I change it*, or flatten its schedule, so Home Assistant is the only scheduler.
 
 ## Notes
 

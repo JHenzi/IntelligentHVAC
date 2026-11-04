@@ -80,7 +80,21 @@ Adds the helpers and automations. Five minutes: [packages/README.md](packages/RE
 
 ### 3. The dashboard (optional, recommended)
 
-Core cards only — [dashboards/README.md](dashboards/README.md).
+A ready-made dashboard ships in [`dashboards/intelligent_hvac_dashboard.yaml`](dashboards/intelligent_hvac_dashboard.yaml). It uses core cards only, so no HACS frontend cards are needed.
+
+1. **Settings → Dashboards → Add dashboard** → *New dashboard from scratch* → open it.
+2. **⋮ → Edit dashboard → ⋮ → Raw configuration editor**, replace everything with the file's contents, and save.
+3. Using a different thermostat than `climate.thermostat`? Find & replace it.
+
+What you get:
+
+- **Tonight**: the plan as a timeline (setback, heat-up, wake-up) and the gauges behind it.
+- **Controls**: *Pause / Resume* for everything that changes your thermostat, and each automation with a one-line note on what it does and when it last ran.
+- **Settings**: wake-up time, target, heat-up limits, setback temperatures, cold thresholds and season-switch thresholds.
+- **What it has learned**: when the model last refit, how much it has seen (heat-ups, AC runs, coasting), heating power, heat loss, backtest error in minutes. A 7-day heat-up / cool-down chart sits under Controls. Mild nights with no heating still teach heat loss.
+- **Smart cooling**: summer advice and the cooling sensors.
+
+More in [dashboards/README.md](dashboards/README.md).
 
 > **Heads up:** the model needs some history to be trustworthy. Check *Thermal Model Confidence* — below ~50% treat the output as a preview.
 

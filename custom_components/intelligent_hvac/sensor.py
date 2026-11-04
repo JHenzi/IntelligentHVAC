@@ -323,7 +323,11 @@ class StatusSensor(IntelligentHVACSensor):
                 attrs["passive_decay_segments"] = len([s for s in segments if s.type == SEGMENT_TYPE_PASSIVE_DECAY])
                 attrs["active_heating_segments"] = len([s for s in segments if s.type == SEGMENT_TYPE_ACTIVE_HEATING])
                 attrs["active_cooling_segments"] = len([s for s in segments if s.type == SEGMENT_TYPE_ACTIVE_COOLING])
+                attrs["passive_gain_segments"] = len([s for s in segments if s.type == SEGMENT_TYPE_PASSIVE_GAIN])
                 attrs["valid_segments"] = len([s for s in segments if s.is_valid])
+                # When the most recent learnable stretch ended: answers "did it learn last night?"
+                newest = max((s.end_time for s in segments), default=None)
+                attrs["newest_segment_end"] = newest.isoformat() if newest else None
             else:
                 attrs["total_segments"] = 0
                 attrs["learning_status"] = "No segments identified yet. Waiting for HVAC activity."
@@ -331,6 +335,8 @@ class StatusSensor(IntelligentHVACSensor):
             if model:
                 attrs["model_confidence"] = round(model.confidence_score * 100, 1)
                 attrs["model_functions"] = list(model.time_to_target_functions.keys())
+                last = getattr(model, "last_updated", None)
+                attrs["model_last_updated"] = last.isoformat() if hasattr(last, "isoformat") else last
             else:
                 attrs["model_confidence"] = None
                 attrs["model_status"] = "No model created yet. Need more segments or data."
@@ -500,11 +506,9 @@ class HeatingRate32FSensor(IntelligentHVACSensor):
             return None
         
         # Get outdoor temp (use 32°F as reference if not available)
-        outdoor_temp = _get_current_outdoor_temp(
-            self.hass,
-            self.coordinator.outdoor_sensor,
-            self.coordinator.resampled_data,
-        ) or 32.0
+        # Evaluated at the reference outdoor temperature in the name, so the
+        # value describes the house, not today's weather.
+        outdoor_temp = 32.0
         
         # Calculate heating rate from active heating model
         # Rate = temp_change / time, so we predict time for 1°F change
@@ -533,8 +537,8 @@ class HeatingRate32FSensor(IntelligentHVACSensor):
         )
         attrs = {
             "description": "How fast the home heats when HVAC is active",
-            "reference_temp_f": outdoor_temp if outdoor_temp else 32,
-            "uses_actual_outdoor_temp": outdoor_temp is not None,
+            "reference_temp_f": 32,
+            "current_outdoor_temp_f": outdoor_temp,
         }
         if model:
             attrs["model_confidence"] = round(model.confidence_score * 100, 1)
@@ -592,11 +596,9 @@ class PassiveDecayRate32FSensor(IntelligentHVACSensor):
             return None
         
         # Get outdoor temp (use 32°F as reference if not available)
-        outdoor_temp = _get_current_outdoor_temp(
-            self.hass,
-            self.coordinator.outdoor_sensor,
-            self.coordinator.resampled_data,
-        ) or 32.0
+        # Evaluated at the reference outdoor temperature in the name, so the
+        # value describes the house, not today's weather.
+        outdoor_temp = 32.0
         
         # Predict passive decay rate at current outdoor temp
         rate = predict_passive_decay_rate(model, normalized_temp, outdoor_temp)
@@ -621,9 +623,9 @@ class PassiveDecayRate32FSensor(IntelligentHVACSensor):
             self.coordinator.resampled_data,
         )
         attrs = {
-            "description": "How fast the home loses heat when HVAC is off (passive decay)",
-            "reference_temp_f": outdoor_temp if outdoor_temp else 32,
-            "uses_actual_outdoor_temp": outdoor_temp is not None,
+            "description": "Indoor temperature change per hour with the HVAC off and 32°F outside, from the current indoor temperature (negative = cooling)",
+            "reference_temp_f": 32,
+            "current_outdoor_temp_f": outdoor_temp,
         }
         if model:
             attrs["model_confidence"] = round(model.confidence_score * 100, 1)
@@ -763,11 +765,9 @@ class CoolingRate75FSensor(IntelligentHVACSensor):
             return None
         
         # Get outdoor temp (use 75°F as reference if not available)
-        outdoor_temp = _get_current_outdoor_temp(
-            self.hass,
-            self.coordinator.outdoor_sensor,
-            self.coordinator.resampled_data,
-        ) or 75.0
+        # Evaluated at the reference outdoor temperature in the name, so the
+        # value describes the house, not today's weather.
+        outdoor_temp = 75.0
         
         # Calculate cooling rate from active cooling model
         # Rate = temp_change / time, so we predict time for 1°F change
@@ -797,8 +797,8 @@ class CoolingRate75FSensor(IntelligentHVACSensor):
         )
         attrs = {
             "description": "How fast the home cools when HVAC is active",
-            "reference_temp_f": outdoor_temp if outdoor_temp else 75,
-            "uses_actual_outdoor_temp": outdoor_temp is not None,
+            "reference_temp_f": 75,
+            "current_outdoor_temp_f": outdoor_temp,
         }
         if model:
             attrs["model_confidence"] = round(model.confidence_score * 100, 1)
@@ -1261,19 +1261,18 @@ class PassiveGainRate75FSensor(IntelligentHVACSensor):
             return None
         
         # Get outdoor temp (use 75°F as reference if not available)
-        outdoor_temp = _get_current_outdoor_temp(
-            self.hass,
-            self.coordinator.outdoor_sensor,
-            self.coordinator.resampled_data,
-        ) or 75.0
+        # Evaluated at the reference outdoor temperature in the name, so the
+        # value describes the house, not today's weather.
+        outdoor_temp = 75.0
         
         # Predict passive decay rate at current outdoor temp
         # For passive gain, we invert the decay rate (positive when outdoor > indoor)
         rate = predict_passive_decay_rate(model, normalized_temp, outdoor_temp)
         if rate is not None:
-            # Invert for gain (positive rate when outdoor is warmer)
-            return -rate if rate < 0 else rate
-        
+            # Signed: positive = the house is warming. (It used to report abs(rate),
+            # which turned heat loss into "gain".)
+            return round(rate, 2)
+
         return None
     
     @property
@@ -1292,9 +1291,9 @@ class PassiveGainRate75FSensor(IntelligentHVACSensor):
             self.coordinator.resampled_data,
         )
         attrs = {
-            "description": "How fast the home gains heat when HVAC is off (passive gain)",
-            "reference_temp_f": outdoor_temp if outdoor_temp else 75,
-            "uses_actual_outdoor_temp": outdoor_temp is not None,
+            "description": "Indoor temperature change per hour with the HVAC off and 75°F outside, from the current indoor temperature (positive = warming)",
+            "reference_temp_f": 75,
+            "current_outdoor_temp_f": outdoor_temp,
         }
         if model:
             attrs["model_confidence"] = round(model.confidence_score * 100, 1)

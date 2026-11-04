@@ -2,6 +2,19 @@
 
 Versions follow Home Assistant's format: `1.2.0b1` is a beta (published as a GitHub pre-release), `1.2.0` is stable.
 
+## 1.2.0b2
+
+**Beta.** Fixes from the first overnight run on the real house, and a rebuilt dashboard.
+
+### Fixed
+- **Fallback heat-up fired every morning.** The smart start is clamped to *wake − Fallback Recovery Lead*, which is exactly when the fallback window opens, so both automations fired in the same second and you got a "fallback heat-up" notification even though smart recovery had worked. The fallback now waits a minute and re-checks the setpoint first.
+- **The "at 32°F" / "at 75°F" rate sensors used today's weather.** *Heating Rate at 32°F*, *Cooling Rate at 75°F*, *Passive Decay Rate at 32°F* and *Passive Gain Rate at 75°F* all evaluated the model at the current outdoor temperature, so they changed with the weather and didn't mean what their names said. They now evaluate at the named temperature, and the current outdoor temperature is kept as the `current_outdoor_temp_f` attribute. *Passive Gain Rate* also reported `abs(rate)`, which showed heat loss as "gain". It is now signed (positive = warming) and rounded.
+- **Nighttime setback could turn the heat on.** If you'd turned the thermostat below the setback by hand, the 22:00 setback raised it. Setback now only ever lowers the setpoint.
+
+### Added
+- The dashboard is rebuilt: tonight's plan as a timeline, *Pause / Resume* for everything that touches the thermostat, every package automation with its last run, all settings in one column, and a band showing what the model has learned and when, plus a 7-day heat-up / cool-down chart. The test buttons now ask before changing the thermostat.
+- *Thermal Model Status* gains `passive_gain_segments`, `newest_segment_end` and `model_last_updated`, so "did it learn last night?" has an answer.
+
 ## 1.2.0b1
 
 **Beta.** The heating model has been rebuilt, and the fixes were checked against 21 days of real thermostat history. It has run on one real house (Ecobee, gas heat) since 2026-11-03. It hasn't been through a cold snap yet, so please report your mornings.

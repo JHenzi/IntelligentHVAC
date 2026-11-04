@@ -301,10 +301,8 @@ automation:
         entity_id: climate.thermostat
         state: heat
     actions:
-      - action: climate.set_temperature
-        target: { entity_id: climate.thermostat }
-        data:
-          temperature: >-
+      - variables:
+          setback: >-
             {% if is_state('binary_sensor.outdoor_temperature_below_extreme_cold_threshold', 'on') %}
               {{ states('input_number.extreme_cold_setback_temperature') | float(68) }}
             {% elif is_state('binary_sensor.outdoor_temperature_below_moderate_cold_threshold', 'on') %}
@@ -312,6 +310,16 @@ automation:
             {% else %}
               {{ states('input_number.nighttime_setback_temperature') | float(65) }}
             {% endif %}
+          current: "{{ state_attr('climate.thermostat', 'temperature') | float(none) }}"
+      # A setback only ever LOWERS the setpoint. If you already turned it down
+      # by hand (warm day, don't want heat), raising it to the setback would
+      # switch the heat on, so leave it alone.
+      - condition: template
+        value_template: "{{ current is none or current > setback | float }}"
+      - action: climate.set_temperature
+        target: { entity_id: climate.thermostat }
+        data:
+          temperature: "{{ setback }}"
     mode: single
 
   # Keep the recovery start time fresh.
@@ -401,6 +409,14 @@ automation:
           {{ state_attr('climate.thermostat', 'temperature') | float(0)
              < states('input_number.target_temperature') | float(70) - 0.5 }}
     actions:
+      # The smart start is clamped to (wake - fallback lead), which is exactly
+      # when this window opens, so both automations often fire in the same
+      # second. Give the smart heat-up a moment, then re-check before stepping in.
+      - delay: "00:01:00"
+      - condition: template
+        value_template: >-
+          {{ state_attr('climate.thermostat', 'temperature') | float(0)
+             < states('input_number.target_temperature') | float(70) - 0.5 }}
       - action: climate.set_temperature
         target: { entity_id: climate.thermostat }
         data:
