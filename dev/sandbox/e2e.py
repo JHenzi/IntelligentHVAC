@@ -55,8 +55,8 @@ class HA:
     def get(self, path):
         return self._req("GET", path)
 
-    def post(self, path, body=None):
-        return self._req("POST", path, body if body is not None else {})
+    def post(self, path, body=None, timeout=60):
+        return self._req("POST", path, body if body is not None else {}, timeout=timeout)
 
     # --- auth --------------------------------------------------------------
     def login(self) -> None:
@@ -102,8 +102,8 @@ class HA:
                 return None
             raise
 
-    def call(self, domain, service, **data):
-        return self.post(f"/api/services/{domain}/{service}", data)
+    def call(self, domain, service, timeout=60, **data):
+        return self.post(f"/api/services/{domain}/{service}", data, timeout=timeout)
 
     def set_number(self, entity_id, value):
         self.call("input_number", "set_value", entity_id=entity_id, value=value)
@@ -301,7 +301,9 @@ def fallback_heat_up(ha: HA) -> None:
         ha.call("climate", "set_hvac_mode", entity_id=CLIMATE, hvac_mode=mode)
         ha.call("climate", "set_temperature", entity_id=CLIMATE, temperature=setpoint)
         settle()
-        ha.call("automation", "trigger", entity_id=auto, skip_condition=False)
+        # automation.trigger waits for the run to finish, and the fallback
+        # waits a minute before acting, so allow well over 60 s.
+        ha.call("automation", "trigger", timeout=180, entity_id=auto, skip_condition=False)
         settle()
         return ha.state(CLIMATE)["attributes"].get("temperature")
 
