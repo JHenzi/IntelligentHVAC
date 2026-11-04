@@ -256,11 +256,21 @@ def heating_automations(ha: HA) -> None:
     ha.call("climate", "set_hvac_mode", entity_id=CLIMATE, hvac_mode="heat")
     for outdoor, want in ((50, 65), (20, 67), (5, 68)):
         ha.set_number("input_number.sandbox_outdoor_temp", outdoor)
+        ha.call("climate", "set_temperature", entity_id=CLIMATE, temperature=70)  # daytime setpoint
         settle()
         ha.call("automation", "trigger", entity_id=setback, skip_condition=False)
         settle()
         got = ha.state(CLIMATE)["attributes"].get("temperature")
         check(f"setback at {outdoor}°F outdoor -> {want}", got is not None and abs(got - want) < 0.6, f"got {got}")
+
+    # Already set below the setback by hand: setback must not raise it.
+    ha.set_number("input_number.sandbox_outdoor_temp", 50)
+    ha.call("climate", "set_temperature", entity_id=CLIMATE, temperature=62)
+    settle()
+    ha.call("automation", "trigger", entity_id=setback, skip_condition=False)
+    settle()
+    got = ha.state(CLIMATE)["attributes"].get("temperature")
+    check("setback never raises a lower manual setpoint (62 stays 62)", got is not None and abs(got - 62) < 0.6, f"got {got}")
 
     ha.call("automation", "trigger", entity_id=heatup, skip_condition=False)
     settle()
