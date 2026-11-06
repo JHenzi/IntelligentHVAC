@@ -54,8 +54,8 @@ Suggested starting values for the safety limits: **Fallback Recovery Lead 90 min
 The learned model decides *when* heat-up starts, but within limits you set:
 
 - The smart start is never **earlier** than *wake − Maximum Recovery Lead* (a model that's too pessimistic can't heat the house half the night).
-- The smart start is never **later** than *wake − Fallback Recovery Lead*.
-- **Smart Recovery: Fallback Heat Up** checks every 5 minutes inside that fallback window. If the thermostat is in `heat` and still below the target, it waits a minute (so a smart start landing on the same minute wins), re-checks, then raises the setpoint and leaves a notification. That covers a missing or implausible model, a stale start time, or HA being restarted at the start minute.
+- If the model has no usable answer (sensor unavailable, or outside 5–300 min per 5°F), the start is *wake − Fallback Recovery Lead*. The fallback lead does **not** floor a working model, so a house that recovers quickly starts later.
+- **Smart Recovery: Fallback Heat Up** checks every 5 minutes from 5 minutes after the smart start time until wake-up. If the thermostat is in `heat` and still below the target, it raises the setpoint and leaves a notification. That covers HA being down or restarting at the start minute.
 
 If you see the fallback notification often, the model isn't doing its job. Please open an issue with your Thermal Model Confidence and Time to Target values.
 

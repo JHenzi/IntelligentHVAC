@@ -194,7 +194,7 @@ def recovery_math(ha: HA) -> None:
         "input_number.moderate_cold_threshold": 32,
         "input_number.extreme_cold_threshold": 15,
         "input_number.sandbox_time_to_target_heat": 180.3,
-        "input_number.fallback_recovery_lead": 30,   # wide clamp: math cases unaffected
+        "input_number.fallback_recovery_lead": 90,   # must NOT floor the model
         "input_number.max_recovery_lead": 360,
     }.items():
         ha.set_number(eid, v)
@@ -205,7 +205,7 @@ def recovery_math(ha: HA) -> None:
         ("mild",    50, 70, 65, round(180.3 * 5 / 5 + 5)),   # plan example: 185 -> 05:55
         ("moderate", 20, 70, 67, round(180.3 * 3 / 5 + 5)),
         ("extreme",  5, 70, 68, round(180.3 * 2 / 5 + 5)),
-        ("no delta", 50, 65, 65, 30),  # buffer 5 -> clamped up to fallback lead 30
+        ("no delta", 50, 65, 65, 5),   # just the buffer; fallback lead doesn't floor it
     ]
     for name, outdoor, target, setback, scaled in cases:
         ha.set_number("input_number.sandbox_outdoor_temp", outdoor)
@@ -222,7 +222,7 @@ def recovery_math(ha: HA) -> None:
         check(f"{name}: start {want_start}", got_start == want_start, f"got {got_start}")
     ha.set_number("input_number.target_temperature", 70)
 
-    # Clamp: lead is kept within [fallback lead, max lead].
+    # Model answer is capped at max lead; fallback lead is used only without a model.
     def lead_with(fallback, max_lead, target):
         ha.set_number("input_number.fallback_recovery_lead", fallback)
         ha.set_number("input_number.max_recovery_lead", max_lead)
@@ -237,9 +237,19 @@ def recovery_math(ha: HA) -> None:
     got = lead_with(30, 150, 70)
     check("clamp: 185 min capped at max lead 150 -> 06:30", got == (150.0, "06:30:00"), str(got))
     got = lead_with(120, 360, 65)
-    check("clamp: 5 min raised to fallback lead 120 -> 07:00", got == (120.0, "07:00:00"), str(got))
+    check("fast model is not floored by fallback lead 120 -> 08:55", got == (5.0, "08:55:00"), str(got))
     got = lead_with(200, 150, 70)
-    check("clamp: fallback lead wins over a smaller max lead", got[0] == 200.0, str(got))
+    check("max lead caps the model even under a larger fallback lead", got[0] == 150.0, str(got))
+    # The live bug: 43.5 min/5°F model, 90 min fallback -> must be 48.5, not 90.
+    ha.set_number("input_number.sandbox_time_to_target_heat", 43.5)
+    got = lead_with(90, 180, 70)
+    check("model 43.5 + buffer 5 -> 48 min, start 08:12 (not pinned to 07:30)",
+          got in ((48.0, "08:12:00"), (49.0, "08:11:00")), str(got))
+    # No usable model -> fallback lead.
+    ha.set_number("input_number.sandbox_time_to_target_heat", 0)
+    got = lead_with(90, 180, 70)
+    check("no model -> fallback lead 90 -> 07:30", got == (90.0, "07:30:00"), str(got))
+    ha.set_number("input_number.sandbox_time_to_target_heat", 180.3)
     ha.set_number("input_number.fallback_recovery_lead", 30)
     ha.set_number("input_number.max_recovery_lead", 360)
     ha.set_number("input_number.target_temperature", 70)
@@ -293,31 +303,35 @@ def fallback_heat_up(ha: HA) -> None:
     from zoneinfo import ZoneInfo
     now = datetime.now(ZoneInfo(ha.get("/api/config")["time_zone"]))
 
-    def run(wake_in_min, lead, mode="heat", setpoint=62):
+    def run(wake_in_min, start_ago_min, mode="heat", setpoint=62):
         wake = (now + timedelta(minutes=wake_in_min)).strftime("%H:%M:00")
+        start = (now - timedelta(minutes=start_ago_min)).strftime("%H:%M:00")
         ha.call("input_datetime", "set_datetime", entity_id="input_datetime.target_wake_up_time", time=wake)
-        ha.set_number("input_number.fallback_recovery_lead", lead)
+        ha.call("input_datetime", "set_datetime", entity_id="input_datetime.smart_recovery_start_time", time=start)
+        ha.set_number("input_number.fallback_recovery_lead", 60)
         ha.set_number("input_number.target_temperature", 70)
         ha.call("climate", "set_hvac_mode", entity_id=CLIMATE, hvac_mode=mode)
         ha.call("climate", "set_temperature", entity_id=CLIMATE, temperature=setpoint)
         settle()
-        # automation.trigger waits for the run to finish, and the fallback
-        # waits a minute before acting, so allow well over 60 s.
-        ha.call("automation", "trigger", timeout=180, entity_id=auto, skip_condition=False)
+        ha.call("automation", "trigger", entity_id=auto, skip_condition=False)
         settle()
         return ha.state(CLIMATE)["attributes"].get("temperature")
 
     if now.hour < 1 or now.hour >= 22:
         print("  SKIP  too close to midnight for wake-time arithmetic")
         return
-    got = run(wake_in_min=120, lead=60)
-    check("outside window (wake in 2h, lead 1h): no change", abs(got - 62) < 0.6, f"got {got}")
-    got = run(wake_in_min=30, lead=60, mode="cool", setpoint=76)
-    check("inside window but not heat mode: no change", abs(got - 76) < 0.6, f"got {got}")
-    got = run(wake_in_min=30, lead=60)
-    check("inside window, setpoint low: raised to target", abs(got - 70) < 0.6, f"got {got}")
-    got = run(wake_in_min=30, lead=60, setpoint=70)
-    check("inside window, already at target: no change", abs(got - 70) < 0.6, f"got {got}")
+    # Wake in 30 min with a 60 min fallback lead: the old fixed window would
+    # fire here, but the smart start (in 10 min) hasn't come yet.
+    got = run(wake_in_min=30, start_ago_min=-10)
+    check("smart start still ahead (inside old fixed window): no change", abs(got - 62) < 0.6, f"got {got}")
+    got = run(wake_in_min=30, start_ago_min=2)
+    check("smart start 2 min ago (grace): no change", abs(got - 62) < 0.6, f"got {got}")
+    got = run(wake_in_min=30, start_ago_min=15, mode="cool", setpoint=76)
+    check("start missed but not heat mode: no change", abs(got - 76) < 0.6, f"got {got}")
+    got = run(wake_in_min=30, start_ago_min=15)
+    check("start missed 15 min ago, setpoint low: raised to target", abs(got - 70) < 0.6, f"got {got}")
+    got = run(wake_in_min=30, start_ago_min=15, setpoint=70)
+    check("start missed, already at target: no change", abs(got - 70) < 0.6, f"got {got}")
     ha.call("input_datetime", "set_datetime", entity_id="input_datetime.target_wake_up_time", time="09:00:00")
     ha.set_number("input_number.fallback_recovery_lead", 30)
 
