@@ -2,6 +2,11 @@
 
 Versions follow Home Assistant's format: `1.2.0b1` is a beta (published as a GitHub pre-release), `1.2.0` is stable.
 
+## Unreleased
+
+### Fixed
+- **The heat-up start time was pinned to *wake − Fallback Recovery Lead* every day.** The smart start was clamped so it could never be later than the fallback lead, so any house that recovers faster than that (here: ~44 min per 5°F against a 90 min fallback) started at the same fixed time each morning and the model was ignored. The model's answer now stands, capped only by *Maximum Recovery Lead*. The fallback lead is used only when the model has no usable answer, and the fallback heat-up now fires only if the smart start time has passed by 5 minutes without the setpoint going up.
+
 ## 1.2.0b2
 
 **Beta.** Fixes from the first overnight run on the real house, and a rebuilt dashboard.
