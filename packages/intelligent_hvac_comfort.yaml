@@ -122,7 +122,7 @@ input_number:
     icon: mdi:fire
   # Calculated values (written by the script below; shown on the dashboard)
   current_recovery_time:
-    name: Current Recovery Time
+    name: Heat-up Time per 5°F
     min: 0
     max: 300
     step: 1
@@ -136,7 +136,7 @@ input_number:
     unit_of_measurement: "°F"
     icon: mdi:thermometer-chevron-up
   scaled_recovery_time:
-    name: Scaled Recovery Time
+    name: Heat-up Lead Before Wake
     min: 0
     max: 300
     step: 1
