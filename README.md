@@ -44,6 +44,7 @@ No cloud. No guesswork. No hard-coded "start heating at 6 AM". Just *"it takes t
 - 🧠 **Learns from the history you already have.** Pulls as much recorder history as exists and starts learning immediately — no two-week waiting period.
 - 📐 **Models four kinds of thermal behaviour:** active heating, active cooling, passive heat loss, and passive heat gain.
 - 🎯 **Answers the questions automations care about:** *How long to recover 5°F? Can the AC keep up today? When should I start pre-cooling?*
+- ⏰ **A smart start that watches the night unfold.** The heat-up time is planned from where the house will *actually* be at dawn: your real setpoint, the indoor and outdoor temperatures, and how fast the house is losing heat tonight. It re-plans every 5 minutes, then locks in shortly before the start so it never drifts late.
 - 🌬️ **Knows when to do nothing.** Cool night and the house is already shedding heat? It tells you to open the windows or coast instead of burning AC.
 - 📈 **Honest about uncertainty.** Every fit is backtested against your own past heat-ups; confidence is driven by the measured error in minutes.
 - 🔌 **Works with Ecobee and HomeKit thermostats** — anything exposing `hvac_action` and `current_temperature`. See [COMPATIBILITY.md](documentation/COMPATIBILITY.md).
@@ -162,6 +163,18 @@ Full details: [documentation/SMART_COOLING.md](documentation/SMART_COOLING.md).
 
 History → uniform resampling → thermal segments → physics model (heat loss + heating power), backtested → sensors.
 Read [documentation/ARCHITECTURE.md](documentation/ARCHITECTURE.md) for the layered design, segment definitions and confidence scoring.
+
+## ⏰ Smart start (winter mornings)
+
+Every 5 minutes overnight the comfort package re-plans the morning heat-up:
+
+1. **Predict the indoor temperature at heat-up time.** The house coasts toward the outdoor temperature but never below the thermostat's live setpoint, so a 60°F setback plans differently from a 64°F one.
+2. **Use tonight's real heat loss.** A one-hour trend sensor (`sensor.intelligent_hvac_indoor_trend`) measures how fast the house is cooling right now; the plan uses whichever is larger, that or the learned coefficient.
+3. **Solve the heat-up time** with the physics model (heating power vs. heat loss), iterated so the start time and the predicted start temperature agree.
+4. **Commit 15 minutes before the start.** After that the time is fixed and the morning automation fires on schedule.
+5. **Never skip a morning.** If a colder-than-expected night means the start is already due, it heats immediately; a fallback automation backs it up if Home Assistant was down at the start minute.
+
+Wake-up time, target, buffer and the maximum lead are all on the dashboard's Settings view.
 
 ## 🗺️ Roadmap
 

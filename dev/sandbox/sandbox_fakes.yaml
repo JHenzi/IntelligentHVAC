@@ -13,6 +13,27 @@ input_number:
     max: 400
     step: 0.1
     unit_of_measurement: min
+  sandbox_heat_loss:
+    name: "Sandbox: Heat Loss per Hour"
+    min: 0
+    max: 1
+    step: 0.001
+  sandbox_heating_power:
+    name: "Sandbox: Heating Power °F/h"
+    min: 0
+    max: 30
+    step: 0.01
+  sandbox_indoor_temp:
+    name: "Sandbox: Indoor Temp"
+    min: 40
+    max: 90
+    step: 0.1
+    unit_of_measurement: "°F"
+  sandbox_indoor_trend:
+    name: "Sandbox: Indoor Trend °F/h"
+    min: -10
+    max: 10
+    step: 0.01
 
 template:
   - sensor:
@@ -25,3 +46,13 @@ template:
         unique_id: sandbox_time_to_target_heat
         unit_of_measurement: min
         state: "{{ states('input_number.sandbox_time_to_target_heat') }}"
+        attributes:
+          heat_loss_per_hour: "{{ states('input_number.sandbox_heat_loss') | float(0) }}"
+          heating_power_f_per_hour: "{{ states('input_number.sandbox_heating_power') | float(0) }}"
+      - name: Sandbox Indoor Temperature
+        unique_id: sandbox_indoor_temperature
+        unit_of_measurement: "°F"
+        state: "{{ states('input_number.sandbox_indoor_temp') }}"
+      - name: Sandbox Indoor Trend
+        unique_id: sandbox_indoor_trend
+        state: "{{ states('input_number.sandbox_indoor_trend') }}"

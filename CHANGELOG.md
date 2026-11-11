@@ -2,6 +2,15 @@
 
 Versions follow Home Assistant's format: `1.2.0b1` is a beta (published as a GitHub pre-release), `1.2.0` is stable.
 
+
+## Unreleased
+- Smart start is dynamic: it predicts the indoor temperature at heat-up time
+  (coasting toward outdoor, floored at the thermostat's real setpoint, using the
+  larger of the model's and tonight's observed heat loss), re-plans every 5 min,
+  and commits 15 min before the start. If the house cools faster than predicted
+  and the start is already due, it heats immediately. Replaces the fixed
+  05:00-10:00 lockout and the setback-helper-based delta.
+
 ## Unreleased
 
 ### Fixed
