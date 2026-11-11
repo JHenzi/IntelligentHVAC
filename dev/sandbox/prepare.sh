@@ -18,6 +18,8 @@ sed -e 's/climate\.thermostat\b/climate.hvac/g' \
     -e 's/weather\.home\b/weather.demo_weather_south/g' \
     -e 's/sensor\.my_outdoor_temperature\b/sensor.sandbox_outdoor_temperature/g' \
     -e 's/sensor\.intelligent_hvac_time_to_target_5degf_heat\b/sensor.sandbox_time_to_target_heat/g' \
+    -e 's/sensor\.intelligent_hvac_learned_indoor_temperature\b/sensor.sandbox_indoor_temperature/g' \
+    -e "s/states('sensor\.intelligent_hvac_indoor_trend')/states('sensor.sandbox_indoor_trend')/g" \
     "$REPO/packages/intelligent_hvac_comfort.yaml" > "$CFG/packages/intelligent_hvac_comfort.yaml"
 
 echo "sandbox config ready: $CFG"
