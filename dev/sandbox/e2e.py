@@ -207,6 +207,16 @@ def recovery_math(ha: HA) -> None:
     # 5-minute re-planner out of the way.
     replan = ha.automation_by_id("ihvac_recovery_on_change")
     ha.call("automation", "turn_off", entity_id=replan)
+    # A fresh CI instance has no saved helper values; set everything the
+    # package reads (later sections rely on the setback values too).
+    for eid, v in {
+        "input_number.nighttime_setback_temperature": 65,
+        "input_number.moderate_cold_setback_temperature": 67,
+        "input_number.extreme_cold_setback_temperature": 68,
+        "input_number.moderate_cold_threshold": 32,
+        "input_number.extreme_cold_threshold": 15,
+    }.items():
+        ha.set_number(eid, v)
     defaults = {
         "input_number.target_temperature": 70,
         "input_number.recovery_time_buffer": 5,
