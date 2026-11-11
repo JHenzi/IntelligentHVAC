@@ -146,6 +146,18 @@ input_number:
 # -----------------------------------------------------------------------------
 # Template sensors
 # -----------------------------------------------------------------------------
+# Live indoor trend (°F/h) over the last hour. The smart start uses it to see
+# how fast the house is actually coasting down tonight, since the learned
+# heat-loss coefficient can badly understate overnight losses.
+sensor:
+  - platform: derivative
+    source: sensor.intelligent_hvac_learned_indoor_temperature
+    name: Intelligent HVAC Indoor Trend
+    unique_id: ihvac_indoor_trend
+    unit_time: h
+    time_window: "01:00:00"
+    round: 2
+
 template:
   - sensor:
       - name: Outdoor Temperature Most Recent
@@ -184,54 +196,115 @@ script:
   intelligent_hvac_update_recovery:
     alias: Intelligent HVAC - Update Recovery Calculations
     description: >-
-      Recomputes how long recovery from tonight's setback to the target takes,
-      and the time heating must start to hit the target at wake-up.
+      Predicts the indoor temperature at heat-up time (passive decay toward the
+      outdoor temperature, floored at the thermostat's actual setpoint), works
+      out how long heating from there to the target takes, and sets the start
+      time. Re-run every 5 minutes overnight so it tracks the house; once the
+      start is within the commit window it stops changing (and if the house
+      has cooled faster than expected and the start is already due, it heats now).
     mode: single
+    max_exceeded: silent
     sequence:
       - variables:
+          commit_min: 15
           outdoor: "{{ states('sensor.outdoor_temperature_most_recent') | float(32) }}"
-          setback: >-
-            {% if outdoor < states('input_number.extreme_cold_threshold') | float(15) %}
-              {{ states('input_number.extreme_cold_setback_temperature') | float(68) }}
-            {% elif outdoor < states('input_number.moderate_cold_threshold') | float(32) %}
-              {{ states('input_number.moderate_cold_setback_temperature') | float(67) }}
-            {% else %}
-              {{ states('input_number.nighttime_setback_temperature') | float(65) }}
-            {% endif %}
           target: "{{ states('input_number.target_temperature') | float(70) }}"
-          delta: "{{ (target | float - setback | float) | abs }}"
+          sp_raw: "{{ state_attr('climate.thermostat', 'temperature') }}"
+          # Where the thermostat will hold the house overnight. Use the real
+          # setpoint when heating; otherwise the configured setback.
+          floor_temp: >-
+            {% if is_state('climate.thermostat', 'heat') and sp_raw is number %}{{ sp_raw | float }}
+            {% elif outdoor < states('input_number.extreme_cold_threshold') | float(15) %}{{ states('input_number.extreme_cold_setback_temperature') | float(68) }}
+            {% elif outdoor < states('input_number.moderate_cold_threshold') | float(32) %}{{ states('input_number.moderate_cold_setback_temperature') | float(67) }}
+            {% else %}{{ states('input_number.nighttime_setback_temperature') | float(65) }}{% endif %}
+          indoor: >-
+            {{ states('sensor.intelligent_hvac_learned_indoor_temperature')
+               | float(state_attr('climate.thermostat', 'current_temperature') | float(floor_temp)) }}
           base: "{{ states('sensor.intelligent_hvac_time_to_target_5degf_heat') | float(0) }}"
-          # A usable model answer: a number in a plausible range (minutes per 5°F).
+          k_model: "{{ state_attr('sensor.intelligent_hvac_time_to_target_5degf_heat', 'heat_loss_per_hour') | float(0) }}"
+          # Observed loss coefficient from the live trend, only while coasting
+          # (heat idle, house falling, meaningfully warmer than outside).
+          k_obs: >-
+            {% set tr = states('sensor.intelligent_hvac_indoor_trend') | float(0) %}
+            {% if tr < -0.1 and indoor - outdoor > 3 and state_attr('climate.thermostat', 'hvac_action') != 'heating' %}
+              {{ [-tr / (indoor - outdoor), 0.3] | min }}
+            {% else %}0{% endif %}
+          k: "{{ [k_model | float, k_obs | float] | max }}"
+          power: "{{ state_attr('sensor.intelligent_hvac_time_to_target_5degf_heat', 'heating_power_f_per_hour') | float(0) }}"
           model_ok: "{{ 5 <= base | float <= 300 }}"
           buffer: "{{ states('input_number.recovery_time_buffer') | float(5) }}"
-          # Model gives minutes per 5°F; scale linearly to the delta we actually need.
-          raw: >-
-            {{ ((base | float * (delta | float / 5.0)) + buffer | float) | round(0)
-               if delta | float > 0 else buffer | float }}
           fallback_lead: "{{ states('input_number.fallback_recovery_lead') | float(90) }}"
           max_lead: "{{ states('input_number.max_recovery_lead') | float(240) }}"
-          # Model answer, capped at the max lead. Fallback lead only when the
-          # model has nothing usable to say.
-          scaled: "{{ [raw | float, max_lead | float] | min if model_ok else fallback_lead | float }}"
-          wake: >-
-            {{ states('input_datetime.target_wake_up_time')
-               if states('input_datetime.target_wake_up_time') not in ['unknown', 'unavailable']
-               else '07:00:00' }}
+          wake_dt: >-
+            {% set w = states('input_datetime.target_wake_up_time') %}
+            {% set d = today_at(w if w not in ['unknown', 'unavailable'] else '07:00:00') %}
+            {{ (d if d > now() else d + timedelta(days=1)).isoformat() }}
+          mins_to_wake: "{{ ((as_datetime(wake_dt) - now()).total_seconds() / 60) | round(1) }}"
+          # Fixed point: lead -> predicted temp at start -> heat-up time -> lead.
+          plan: >-
+            {% set ns = namespace(lead=60.0, ts=floor_temp | float, heat=0.0) %}
+            {% for i in range(10) %}
+              {% set hrs = [mins_to_wake | float - ns.lead, 0] | max / 60 %}
+              {% set ts = outdoor + (indoor - outdoor) * (e ** (-(k | float) * hrs)) if k | float > 0 else indoor %}
+              {% set ts = [[ts, indoor] | min, floor_temp | float] | max %}
+              {% set need = target | float - ts %}
+              {% if need <= 0 %}{% set heat = 0 %}
+              {% else %}
+                {% set num = power | float - k | float * (ts - outdoor) %}
+                {% set den = power | float - k | float * (target | float - outdoor) %}
+                {% if k | float > 0 and power | float > 0 and den > 0 and num > den %}
+                  {% set heat = 60 / (k | float) * log(num / den) %}
+                {% else %}
+                  {% set heat = base | float * need / 5 %}
+                {% endif %}
+              {% endif %}
+              {% set new = [heat + buffer | float, max_lead | float] | min %}
+              {% set ns.lead = (ns.lead + new) / 2 if i < 9 else new %}
+              {% set ns.ts = ts %}{% set ns.heat = heat %}
+            {% endfor %}
+            {% set lead = ns.lead if model_ok else fallback_lead | float %}
+            {{ {'lead': lead | round(0), 'start_temp': ns.ts | round(1), 'heat': ns.heat | round(1),
+                'delta': [target | float - ns.ts, 0] | max | round(1)} }}
+          new_start: "{{ (as_datetime(wake_dt) - timedelta(minutes=plan.lead | float)).isoformat() }}"
+          # The start already committed for this wake-up (if any).
+          old_start: >-
+            {% set s = states('input_datetime.smart_recovery_start_time') %}
+            {% if s in ['unknown', 'unavailable', ''] %}{{ none }}{% else %}
+              {% set d = as_datetime(wake_dt).replace(hour=today_at(s).hour, minute=today_at(s).minute, second=0) %}
+              {{ (d if d <= as_datetime(wake_dt) else d - timedelta(days=1)).isoformat() }}
+            {% endif %}
+          # Committed: the existing start is within commit_min (or past) for this
+          # wake-up. Stop moving it; the morning/fallback automations take it from here.
+          locked: >-
+            {{ old_start is not none
+               and as_datetime(old_start) - timedelta(minutes=commit_min) <= now()
+               and as_datetime(old_start) > as_datetime(wake_dt) - timedelta(minutes=max_lead | float + 1) }}
+      - condition: template
+        value_template: "{{ not locked }}"
       - action: input_number.set_value
         target: { entity_id: input_number.current_recovery_time }
         data: { value: "{{ [base | float, 300] | min if model_ok else 0 }}" }
       - action: input_number.set_value
         target: { entity_id: input_number.temperature_delta }
-        data: { value: "{{ [delta | float, 20] | min }}" }
+        data: { value: "{{ [plan.delta | float, 20] | min }}" }
       - action: input_number.set_value
         target: { entity_id: input_number.scaled_recovery_time }
-        data: { value: "{{ [scaled | float, 300] | min }}" }
+        data: { value: "{{ [plan.lead | float, 300] | min }}" }
       - action: input_datetime.set_datetime
         target: { entity_id: input_datetime.smart_recovery_start_time }
         data:
-          time: >-
-            {% set start = strptime(wake, '%H:%M:%S') - timedelta(minutes=scaled | float) %}
-            {{ start.strftime('%H:%M:%S') }}
+          time: "{{ as_datetime(new_start).strftime('%H:%M:00') }}"
+      # Already due (house cooled faster than predicted): heat now, don't skip.
+      - if:
+          - condition: template
+            value_template: >-
+              {{ as_datetime(new_start) <= now()
+                 and is_state('climate.thermostat', 'heat')
+                 and sp_raw is number and sp_raw | float < target | float - 0.5 }}
+        then:
+          - action: climate.set_temperature
+            target: { entity_id: climate.thermostat }
+            data: { temperature: "{{ target }}" }
 
 # -----------------------------------------------------------------------------
 # Automations
@@ -326,43 +399,32 @@ automation:
           temperature: "{{ setback }}"
     mode: single
 
-  # Keep the recovery start time fresh.
-  - id: ihvac_recovery_daily
-    alias: Update Smart Recovery Start Time Daily
-    triggers:
-      - trigger: time
-        at: "00:00:01"
-    conditions:
-      - condition: numeric_state
-        entity_id: sensor.intelligent_hvac_time_to_target_5degf_heat
-        above: 0
-    actions:
-      - action: script.intelligent_hvac_update_recovery
-    mode: single
-
+  # Keep the recovery start time fresh: every 5 min plus on any input change.
+  # The script itself commits (stops moving the start) once it is close.
   - id: ihvac_recovery_on_change
     alias: Update Recovery Values on Change
     description: >-
-      Recompute when the model, target temperature or wake-up time changes.
-      Locked out 05:00-10:00 so a late recalculation can never move the start
-      time into the past (which would skip heating until tomorrow).
+      Recompute the smart start from the live setpoint, indoor and outdoor
+      temperatures. Commits 15 min before the start; never moves it into the past.
     triggers:
+      - trigger: time_pattern
+        minutes: /5
       - trigger: state
         entity_id:
           - sensor.intelligent_hvac_time_to_target_5degf_heat
           - input_number.target_temperature
           - input_datetime.target_wake_up_time
+      - trigger: state
+        entity_id: climate.thermostat
+        attribute: temperature
     conditions:
-      - condition: numeric_state
-        entity_id: sensor.intelligent_hvac_time_to_target_5degf_heat
-        above: 0
-      - condition: time
-        after: "10:00:00"
-        before: "05:00:00"
+      - condition: state
+        entity_id: climate.thermostat
+        state: heat
     actions:
       - action: script.intelligent_hvac_update_recovery
-    mode: queued
-    max: 3
+    mode: single
+    max_exceeded: silent
 
   # The payoff: start heating exactly when the model says we must.
   - id: ihvac_morning_heat_up
