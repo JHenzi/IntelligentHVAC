@@ -15,7 +15,7 @@
 
 ## How the morning heat-up works
 
-1. At 22:00 the house sets back to tonight's calculated setback (see below).
+1. At *Setback Starts* (e.g. 22:00) the house sets back to tonight's calculated setback (see below). Until then, the start time is planned for the coming night from the forecast low and tonight's setback, so it doesn't drift with the daytime temperature. After the setback it tracks the real house every 5 minutes and locks in 15 minutes before the start.
 2. The integration's `Time to Target 5°F Heat` sensor says how long the house takes to gain 5°F *right now*.
 3. The script scales that to the real setback→target gap, adds your buffer, and subtracts it from your wake-up time → **`Smart Recovery Start Time`**.
 4. At that moment the thermostat is raised to your target. You wake up warm; the house wasn't heated all night.
@@ -45,7 +45,7 @@ The recovery start time is not recalculated between 05:00 and 10:00, so a late u
 
 ## First run
 
-The helpers deliberately have no `initial:` value, so Home Assistant **restores your settings across restarts** instead of resetting them. On first start they sit at their minimum — set your **wake-up time, target temperature, setback minimum, longest heat-up and thresholds** (the dashboard has them all) before relying on the automations.
+The helpers deliberately have no `initial:` value, so Home Assistant **restores your settings across restarts** instead of resetting them. On first start they sit at their minimum — set your **wake-up time, target temperature, setback start time, setback minimum, longest heat-up and thresholds** (the dashboard has them all) before relying on the automations.
 
 Suggested starting values: **Fallback Recovery Lead 90 min**, **Maximum Recovery Lead 180 min**, **Longest Morning Heat-up 90 min**. Watch a few mornings and adjust.
 
@@ -66,7 +66,7 @@ If you see the fallback notification often, the model isn't doing its job. Pleas
 - **Night Setback Minimum** is the coolest you want the house overnight. On mild nights the house coasts toward it and often never gets there, so the furnace doesn't run until the morning heat-up.
 - On cold nights the setback is raised to **the lowest temperature the furnace can recover from within *Longest Morning Heat-up*** (default 90 min) at the forecast overnight low. Same physics as the start time: `minutes = 60/k · ln((P − k(S − Tout)) / (P − k(Target − Tout)))`, solved for the setback S.
 - It stays on the safe side: the time budget is reduced by the model's backtest error, and heating power is derated 0.5% per °F (up to 25%) when the low is colder than the model has seen.
-- The forecast low is the coldest hourly temperature between 22:00 and wake-up (or the daily low if the weather entity has no hourly forecast), or the current outdoor temperature if that is colder.
+- The forecast low is the coldest hourly temperature between *Setback Starts* and wake-up (or the daily low if the weather entity has no hourly forecast), or the current outdoor temperature if that is colder.
 
 A gas furnace always saves energy with a deeper setback (a cooler house loses less heat), so the limit is comfort and a reliable recovery, not efficiency. With a heat pump, a long recovery can bring on electric backup heat. Keep *Longest Morning Heat-up* short or the minimum higher.
 
@@ -76,7 +76,7 @@ A gas furnace always saves energy with a deeper setback (a cooler house loses le
 
 ## Nighttime setback only ever lowers
 
-The 22:00 setback only **lowers** the setpoint. If you've already turned the thermostat down further by hand (a warm day, and you don't want the heat coming on), it leaves your setting alone instead of raising it and starting the heat.
+The setback only **lowers** the setpoint. If you've already turned the thermostat down further by hand (a warm day, and you don't want the heat coming on), it leaves your setting alone instead of raising it and starting the heat.
 
 > **Thermostat schedules fight back.** Most thermostats (ecobee included, over HomeKit too) treat a setpoint change as a hold that ends at the next schedule transition. If the setpoint jumps around with no automation behind it, set the thermostat's hold action to *until I change it*, or flatten its schedule, so Home Assistant is the only scheduler.
 
