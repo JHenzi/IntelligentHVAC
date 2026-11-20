@@ -49,6 +49,8 @@ template:
         attributes:
           heat_loss_per_hour: "{{ states('input_number.sandbox_heat_loss') | float(0) }}"
           heating_power_f_per_hour: "{{ states('input_number.sandbox_heating_power') | float(0) }}"
+          backtest_error_minutes: 0
+          outdoor_range_seen_f: "{{ [-20, 110] }}"
       - name: Sandbox Indoor Temperature
         unique_id: sandbox_indoor_temperature
         unit_of_measurement: "°F"

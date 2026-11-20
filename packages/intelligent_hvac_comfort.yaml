@@ -18,7 +18,7 @@
 #   2. Copy this file to <config>/packages/
 #   3. Find & replace the entity IDs below if yours differ:
 #        climate.thermostat   -> your thermostat
-#        weather.home         -> your weather entity (daily forecast support)
+#        weather.home         -> your weather entity (daily + hourly forecasts)
 #        sensor.intelligent_hvac_time_to_target_5degf_heat / _cool -> Intelligent HVAC sensors
 #   4. Restart Home Assistant.
 # =============================================================================
@@ -37,6 +37,12 @@ input_datetime:
     has_date: false
     has_time: true
     icon: mdi:clock-start
+  # Written by the heat-up measurement automation (when the current run began).
+  ihvac_recovery_started:
+    name: Heat-up Run Started
+    has_date: true
+    has_time: true
+    icon: mdi:timer-play-outline
 
 input_number:
   target_temperature:
@@ -71,27 +77,27 @@ input_number:
     step: 5
     unit_of_measurement: min
     icon: mdi:timer-alert-outline
+  # The coolest the house may get overnight. On mild nights the house coasts
+  # toward it (often never reaching it); on cold nights the setback is raised
+  # automatically (see sensor.intelligent_hvac_night_setback).
   nighttime_setback_temperature:
-    name: Nighttime Setback Temperature
+    name: Night Setback Minimum
     min: 55
     max: 75
     step: 1
     unit_of_measurement: "°F"
     icon: mdi:thermometer-low
-  moderate_cold_setback_temperature:
-    name: Moderate Cold Setback Temperature
-    min: 55
-    max: 75
-    step: 1
-    unit_of_measurement: "°F"
-    icon: mdi:thermometer-minus
-  extreme_cold_setback_temperature:
-    name: Extreme Cold Setback Temperature
-    min: 55
-    max: 75
-    step: 1
-    unit_of_measurement: "°F"
-    icon: mdi:thermometer-alert
+  # The longest morning heat-up you accept. Cold nights get a shallower setback
+  # so the furnace can still recover within this. ~90 min is a good start.
+  setback_max_recovery:
+    name: Longest Morning Heat-up
+    min: 30
+    max: 180
+    step: 5
+    unit_of_measurement: min
+    icon: mdi:timer-cog-outline
+  # Cold thresholds only drive the two "below ... threshold" binary sensors now
+  # (informational). The setback depth is calculated, not tiered.
   moderate_cold_threshold:
     name: Moderate Cold Threshold
     min: -20
@@ -142,6 +148,14 @@ input_number:
     step: 1
     unit_of_measurement: min
     icon: mdi:timer-sand
+  # Model's raw prediction for the heat-up run in progress (0 = none running).
+  ihvac_recovery_predicted:
+    name: Heat-up Run Predicted
+    min: 0
+    max: 600
+    step: 0.1
+    unit_of_measurement: min
+    icon: mdi:timer-outline
 
 # -----------------------------------------------------------------------------
 # Template sensors
@@ -189,6 +203,135 @@ template:
           {{ states('sensor.outdoor_temperature_most_recent') | float(99)
              < states('input_number.moderate_cold_threshold') | float(32) }}
 
+  # Recovery speed correction, taught by real mornings. Each measured heat-up
+  # reports actual / predicted minutes; this keeps a running average (each new
+  # morning counts 30%). < 1 means the furnace is faster than the model says.
+  # Restored across restarts. Fire `ihvac_recovery_measured` with
+  # `factor: 1` to reset it.
+  - triggers:
+      - trigger: event
+        event_type: ihvac_recovery_measured
+    sensor:
+      - name: Intelligent HVAC Recovery Speed Factor
+        unique_id: ihvac_recovery_speed_factor
+        icon: mdi:speedometer
+        state: >-
+          {% set d = trigger.event.data %}
+          {% if d.factor is defined %}{{ d.factor | float(1) | round(3) }}
+          {% else %}
+            {% set prev = this.state | float(1) %}
+            {% set r = [[d.ratio | float(1), 0.5] | max, 1.5] | min %}
+            {{ ([[prev * 0.7 + r * 0.3, 0.5] | max, 1.5] | min) | round(3) }}
+          {% endif %}
+        attributes:
+          samples: >-
+            {% set d = trigger.event.data %}
+            {{ d.samples | int(0) if d.factor is defined else (this.attributes.get('samples', 0) | int(0)) + 1 }}
+          last_actual_min: "{{ trigger.event.data.get('actual_min', this.attributes.get('last_actual_min')) }}"
+          last_predicted_min: "{{ trigger.event.data.get('predicted_min', this.attributes.get('last_predicted_min')) }}"
+          last_outdoor_f: "{{ trigger.event.data.get('outdoor_f', this.attributes.get('last_outdoor_f')) }}"
+          last_measured: "{{ now().isoformat() }}"
+
+  # Tonight's setback: the lowest temperature the furnace can recover from
+  # within "Longest Morning Heat-up" at the forecast overnight low, never below
+  # "Night Setback Minimum". Same physics as the recovery script:
+  #   heat-up minutes = 60/k * ln((P - k(S - Tout)) / (P - k(Target - Tout)))
+  # solved for S. The time budget is shrunk by the model's backtest error and
+  # divided by the learned recovery speed factor; heating power is derated
+  # 0.5% per °F (max 25%) when the low is colder than the model has seen.
+  - triggers:
+      - trigger: time_pattern
+        minutes: /15
+      - trigger: homeassistant
+        event: start
+      - trigger: state
+        entity_id:
+          - input_number.nighttime_setback_temperature
+          - input_number.setback_max_recovery
+          - input_number.target_temperature
+          - input_datetime.target_wake_up_time
+          - sensor.intelligent_hvac_recovery_speed_factor
+          - sensor.intelligent_hvac_time_to_target_5degf_heat
+    actions:
+      # Hourly forecast when the weather entity has one, else daily (its low).
+      - variables:
+          fc_type: >-
+            {{ 'hourly' if (state_attr('weather.home', 'supported_features') | int(0)) | bitwise_and(2) else 'daily' }}
+      - action: weather.get_forecasts
+        target: { entity_id: weather.home }
+        data: { type: "{{ fc_type }}" }
+        response_variable: fc
+        continue_on_error: true
+      - variables:
+          wake_dt: >-
+            {% set w = states('input_datetime.target_wake_up_time') %}
+            {% set d = today_at(w if w not in ['unknown', 'unavailable'] else '07:00:00') %}
+            {{ (d if d > now() else d + timedelta(days=1)).isoformat() }}
+          # Coldest of: the forecast between 22:00 and wake-up (hourly temps, or
+          # the daily low for the wake-up day), and the current outdoor temp.
+          low: >-
+            {% set wake = as_datetime(wake_dt) %}
+            {% set start = (wake - timedelta(days=1)).replace(hour=22, minute=0, second=0) %}
+            {% set ns = namespace(t=[]) %}
+            {% for f in ((fc | default({})).get('weather.home', {})).get('forecast', []) %}
+              {% set ft = as_datetime(f.datetime) | as_local if f.datetime is defined else none %}
+              {% if ft is none %}
+              {% elif fc_type == 'hourly' and start <= ft <= wake and f.temperature is number %}
+                {% set ns.t = ns.t + [f.temperature | float] %}
+              {% elif fc_type == 'daily' and ft.date() == wake.date() and f.templow is number %}
+                {% set ns.t = ns.t + [f.templow | float] %}
+              {% endif %}
+            {% endfor %}
+            {% set cur = states('sensor.outdoor_temperature_most_recent') | float(none) %}
+            {% if cur is not none %}{% set ns.t = ns.t + [cur] %}{% endif %}
+            {{ (ns.t | min) if ns.t else none }}
+          minimum: "{{ states('input_number.nighttime_setback_temperature') | float(63) }}"
+          target: "{{ states('input_number.target_temperature') | float(70) }}"
+          limit: "{{ states('input_number.setback_max_recovery') | float(90) }}"
+          factor: "{{ states('sensor.intelligent_hvac_recovery_speed_factor') | float(1) }}"
+          k: "{{ state_attr('sensor.intelligent_hvac_time_to_target_5degf_heat', 'heat_loss_per_hour') | float(0) }}"
+          power: "{{ state_attr('sensor.intelligent_hvac_time_to_target_5degf_heat', 'heating_power_f_per_hour') | float(0) }}"
+          err: "{{ state_attr('sensor.intelligent_hvac_time_to_target_5degf_heat', 'backtest_error_minutes') | float(0) }}"
+          seen_min: >-
+            {% set r = state_attr('sensor.intelligent_hvac_time_to_target_5degf_heat', 'outdoor_range_seen_f') %}
+            {{ r[0] | float(-999) if r is iterable and r is not string and r | count > 0 else -999 }}
+          plan: >-
+            {% if low is none or k <= 0 or power <= 0 %}
+              {{ {'setback': minimum, 'reason': 'no model or forecast: using the minimum', 'heat_up_min': none, 'derate': 0} }}
+            {% else %}
+              {% set derate = [[0.005 * (seen_min - low), 0] | max, 0.25] | min %}
+              {% set p = power * (1 - derate) %}
+              {% set budget = [limit - err, 5] | max / factor %}
+              {% set hold = p - k * (target - low) %}
+              {% if hold <= 0 %}
+                {% set s = target %}{% set why = 'furnace cannot gain at this low: no setback' %}
+              {% else %}
+                {% set raw = low + (p - hold * e ** (k * budget / 60)) / k %}
+                {% set s = [[(raw | round(0, 'ceil')), minimum] | max, target] | min %}
+                {% set why = 'mild night: coasts toward the minimum' if s <= minimum
+                             else 'cold night: limited so heat-up fits in ' ~ (limit | int) ~ ' min' %}
+              {% endif %}
+              {% set num = p - k * (s - low) %}
+              {% set heat = (60 / k * log(num / hold) * factor + err) if hold > 0 and num > hold else 0 %}
+              {{ {'setback': s, 'reason': why, 'heat_up_min': heat | round(0), 'derate': (derate * 100) | round(0)} }}
+            {% endif %}
+    sensor:
+      - name: Intelligent HVAC Night Setback
+        unique_id: ihvac_night_setback
+        unit_of_measurement: "°F"
+        device_class: temperature
+        icon: mdi:thermometer-auto
+        state: "{{ plan.setback | float | round(0) }}"
+        attributes:
+          overnight_low_f: "{{ low | round(1) if low is not none else none }}"
+          forecast_type: "{{ fc_type }}"
+          reason: "{{ plan.reason }}"
+          heat_up_from_setback_min: "{{ plan.heat_up_min }}"
+          longest_heat_up_min: "{{ limit | int }}"
+          minimum_f: "{{ minimum }}"
+          recovery_speed_factor: "{{ factor }}"
+          power_derate_pct: "{{ plan.derate }}"
+
 # -----------------------------------------------------------------------------
 # Script: the one place the recovery math lives
 # -----------------------------------------------------------------------------
@@ -211,12 +354,11 @@ script:
           target: "{{ states('input_number.target_temperature') | float(70) }}"
           sp_raw: "{{ state_attr('climate.thermostat', 'temperature') }}"
           # Where the thermostat will hold the house overnight. Use the real
-          # setpoint when heating; otherwise the configured setback.
+          # setpoint when heating; otherwise tonight's calculated setback.
           floor_temp: >-
             {% if is_state('climate.thermostat', 'heat') and sp_raw is number %}{{ sp_raw | float }}
-            {% elif outdoor < states('input_number.extreme_cold_threshold') | float(15) %}{{ states('input_number.extreme_cold_setback_temperature') | float(68) }}
-            {% elif outdoor < states('input_number.moderate_cold_threshold') | float(32) %}{{ states('input_number.moderate_cold_setback_temperature') | float(67) }}
-            {% else %}{{ states('input_number.nighttime_setback_temperature') | float(65) }}{% endif %}
+            {% else %}{{ states('sensor.intelligent_hvac_night_setback')
+                         | float(states('input_number.nighttime_setback_temperature') | float(65)) }}{% endif %}
           indoor: >-
             {{ states('sensor.intelligent_hvac_learned_indoor_temperature')
                | float(state_attr('climate.thermostat', 'current_temperature') | float(floor_temp)) }}
@@ -231,6 +373,8 @@ script:
             {% else %}0{% endif %}
           k: "{{ [k_model | float, k_obs | float] | max }}"
           power: "{{ state_attr('sensor.intelligent_hvac_time_to_target_5degf_heat', 'heating_power_f_per_hour') | float(0) }}"
+          # Learned from real mornings: actual / predicted heat-up minutes.
+          factor: "{{ states('sensor.intelligent_hvac_recovery_speed_factor') | float(1) }}"
           model_ok: "{{ 5 <= base | float <= 300 }}"
           buffer: "{{ states('input_number.recovery_time_buffer') | float(5) }}"
           fallback_lead: "{{ states('input_number.fallback_recovery_lead') | float(90) }}"
@@ -253,9 +397,9 @@ script:
                 {% set num = power | float - k | float * (ts - outdoor) %}
                 {% set den = power | float - k | float * (target | float - outdoor) %}
                 {% if k | float > 0 and power | float > 0 and den > 0 and num > den %}
-                  {% set heat = 60 / (k | float) * log(num / den) %}
+                  {% set heat = 60 / (k | float) * log(num / den) * factor | float %}
                 {% else %}
-                  {% set heat = base | float * need / 5 %}
+                  {% set heat = base | float * need / 5 * factor | float %}
                 {% endif %}
               {% endif %}
               {% set new = [heat + buffer | float, max_lead | float] | min %}
@@ -369,7 +513,10 @@ automation:
   # Heating season, evening: relax the setpoint, deeper setback when it is mild.
   - id: ihvac_nighttime_setback
     alias: Turn down heat at night (Dynamic Setback)
-    description: Sets back the temperature at 22:00, adjusted for outdoor temperature.
+    description: >-
+      Sets back the temperature at 22:00 to tonight's calculated setback: the
+      minimum on mild nights, shallower on cold nights so the morning heat-up
+      stays within the longest heat-up you allow.
     triggers:
       - trigger: time
         at: "22:00:00"
@@ -380,13 +527,8 @@ automation:
     actions:
       - variables:
           setback: >-
-            {% if is_state('binary_sensor.outdoor_temperature_below_extreme_cold_threshold', 'on') %}
-              {{ states('input_number.extreme_cold_setback_temperature') | float(68) }}
-            {% elif is_state('binary_sensor.outdoor_temperature_below_moderate_cold_threshold', 'on') %}
-              {{ states('input_number.moderate_cold_setback_temperature') | float(67) }}
-            {% else %}
-              {{ states('input_number.nighttime_setback_temperature') | float(65) }}
-            {% endif %}
+            {{ states('sensor.intelligent_hvac_night_setback')
+               | float(states('input_number.nighttime_setback_temperature') | float(65)) }}
           current: "{{ state_attr('climate.thermostat', 'temperature') | float(none) }}"
       # A setback only ever LOWERS the setpoint. If you already turned it down
       # by hand (warm day, don't want heat), raising it to the setback would
@@ -497,3 +639,95 @@ automation:
             so the fallback did (target {{ states('input_number.target_temperature') }}°F).
             Smart start time was {{ states('input_datetime.smart_recovery_start_time') }}.
     mode: single
+
+  # Teach the model: time every morning heat-up and compare it with the
+  # physics prediction. The ratio feeds sensor.intelligent_hvac_recovery_speed_factor,
+  # which the start time and the cold-night setback both use.
+  - id: ihvac_measure_recovery
+    alias: "Smart Recovery: Measure Heat-up"
+    description: >-
+      Records each pre-wake heat-up of 3°F or more (start time and predicted
+      minutes), then reports actual vs predicted when the house reaches the
+      target. Runs that are cut short or take over 4 hours are discarded.
+    triggers:
+      - trigger: state
+        entity_id: climate.thermostat
+        attribute: temperature
+        id: setpoint
+      - trigger: template
+        value_template: >-
+          {{ states('sensor.intelligent_hvac_learned_indoor_temperature') | float(0)
+             >= states('input_number.target_temperature') | float(70) - 0.5 }}
+        id: reached
+    conditions:
+      - condition: state
+        entity_id: climate.thermostat
+        state: heat
+    actions:
+      - variables:
+          target: "{{ states('input_number.target_temperature') | float(70) }}"
+          sp: "{{ state_attr('climate.thermostat', 'temperature') | float(0) }}"
+          indoor: >-
+            {{ states('sensor.intelligent_hvac_learned_indoor_temperature')
+               | float(state_attr('climate.thermostat', 'current_temperature') | float(0)) }}
+          outdoor: "{{ states('sensor.outdoor_temperature_most_recent') | float(none) }}"
+          k: "{{ state_attr('sensor.intelligent_hvac_time_to_target_5degf_heat', 'heat_loss_per_hour') | float(0) }}"
+          power: "{{ state_attr('sensor.intelligent_hvac_time_to_target_5degf_heat', 'heating_power_f_per_hour') | float(0) }}"
+          predicted: "{{ states('input_number.ihvac_recovery_predicted') | float(0) }}"
+          # Minutes since wake-up time today (negative = before wake-up).
+          mins_from_wake: >-
+            {% set w = states('input_datetime.target_wake_up_time') %}
+            {{ ((now() - today_at(w if w not in ['unknown', 'unavailable'] else '07:00:00')).total_seconds() / 60) | round(1) }}
+          started_ts: "{{ state_attr('input_datetime.ihvac_recovery_started', 'timestamp') | float(0) }}"
+      - choose:
+          # Setpoint raised to the target, house well below it, within 4 h of wake-up: start timing.
+          - conditions:
+              - condition: trigger
+                id: setpoint
+              - condition: template
+                value_template: >-
+                  {{ sp >= target - 0.5 and indoor <= target - 3 and outdoor is not none
+                     and k > 0 and power > k * (target - outdoor)
+                     and -240 <= mins_from_wake <= 30 }}
+            sequence:
+              - action: input_datetime.set_datetime
+                target: { entity_id: input_datetime.ihvac_recovery_started }
+                data: { datetime: "{{ now().strftime('%Y-%m-%d %H:%M:%S') }}" }
+              - action: input_number.set_value
+                target: { entity_id: input_number.ihvac_recovery_predicted }
+                data:
+                  value: >-
+                    {{ (60 / k * log((power - k * (indoor - outdoor)) / (power - k * (target - outdoor)))) | round(1) }}
+          # Setpoint dropped below the target mid-run: discard.
+          - conditions:
+              - condition: trigger
+                id: setpoint
+              - condition: template
+                value_template: "{{ predicted > 0 and sp < target - 0.5 }}"
+            sequence:
+              - action: input_number.set_value
+                target: { entity_id: input_number.ihvac_recovery_predicted }
+                data: { value: 0 }
+          # Reached the target: report actual vs predicted (if the run is sane).
+          - conditions:
+              - condition: trigger
+                id: reached
+              - condition: template
+                value_template: "{{ predicted > 0 and started_ts > 0 }}"
+            sequence:
+              - variables:
+                  actual: "{{ ((now().timestamp() - started_ts) / 60) | round(1) }}"
+              - if:
+                  - condition: template
+                    value_template: "{{ 5 <= actual <= 240 }}"
+                then:
+                  - event: ihvac_recovery_measured
+                    event_data:
+                      ratio: "{{ (actual / predicted) | round(3) }}"
+                      actual_min: "{{ actual }}"
+                      predicted_min: "{{ predicted }}"
+                      outdoor_f: "{{ outdoor }}"
+              - action: input_number.set_value
+                target: { entity_id: input_number.ihvac_recovery_predicted }
+                data: { value: 0 }
+    mode: queued

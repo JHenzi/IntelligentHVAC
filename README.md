@@ -91,7 +91,7 @@ What you get:
 
 - **Tonight**: the plan as a timeline (setback, heat-up, wake-up) and the gauges behind it.
 - **Controls**: *Pause / Resume* for everything that changes your thermostat, and each automation with a one-line note on what it does and when it last ran.
-- **Settings**: wake-up time, target, heat-up limits, setback temperatures, cold thresholds and season-switch thresholds.
+- **Settings**: wake-up time, target, heat-up limits, setback minimum and longest heat-up (with tonight's calculated setback), and season-switch thresholds.
 - **What it has learned**: when the model last refit, how much it has seen (heat-ups, AC runs, coasting), heating power, heat loss, backtest error in minutes. A 7-day heat-up / cool-down chart sits under Controls. Mild nights with no heating still teach heat loss.
 - **Smart cooling**: summer advice and the cooling sensors.
 
@@ -173,6 +173,8 @@ Every 5 minutes overnight the comfort package re-plans the morning heat-up:
 3. **Solve the heat-up time** with the physics model (heating power vs. heat loss), iterated so the start time and the predicted start temperature agree.
 4. **Commit 15 minutes before the start.** After that the time is fixed and the morning automation fires on schedule.
 5. **Never skip a morning.** If a colder-than-expected night means the start is already due, it heats immediately; a fallback automation backs it up if Home Assistant was down at the start minute.
+
+The night setback is calculated too: as deep as *Night Setback Minimum* on mild nights, shallower on cold nights so the heat-up fits in *Longest Morning Heat-up*. Every morning's heat-up is timed and compared with the prediction, and the running ratio corrects both the start time and the setback ([details](packages/README.md#night-setback-as-deep-as-the-furnace-can-recover-from)).
 
 Wake-up time, target, buffer and the maximum lead are all on the dashboard's Settings view.
 

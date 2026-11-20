@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import sys
 import time
@@ -199,6 +200,33 @@ def plan_lead(*, mins_to_wake, indoor, outdoor, floor, target, base, k, power, b
     return round(lead)
 
 
+def setback_ref(*, low, k, power, target, minimum, limit, factor=1.0, err=0.0, seen_min=-20.0) -> float:
+    """Python mirror of sensor.intelligent_hvac_night_setback."""
+    if k <= 0 or power <= 0:
+        return minimum
+    p = power * (1 - min(max(0.005 * (seen_min - low), 0), 0.25))
+    budget = max(limit - err, 5) / factor
+    hold = p - k * (target - low)
+    if hold <= 0:
+        return target
+    raw = low + (p - hold * math.exp(k * budget / 60)) / k
+    return min(max(math.ceil(raw), minimum), target)
+
+
+def reset_learning(ha: HA) -> None:
+    ha.post("/api/events/ihvac_recovery_measured", {"factor": 1, "samples": 0})
+    settle(0.5)
+
+
+def refresh_setback(ha: HA) -> dict:
+    """Nudge an input the setback sensor listens to, then read it."""
+    cur = float(ha.state("input_number.setback_max_recovery")["state"])
+    ha.set_number("input_number.setback_max_recovery", cur + 5 if cur < 180 else cur - 5)
+    ha.set_number("input_number.setback_max_recovery", cur)
+    settle(1.5)
+    return ha.state("sensor.intelligent_hvac_night_setback")
+
+
 def recovery_math(ha: HA) -> None:
     print("Smart start plan (script.intelligent_hvac_update_recovery)")
     from zoneinfo import ZoneInfo
@@ -206,13 +234,14 @@ def recovery_math(ha: HA) -> None:
     # Script + heat-now side effects are checked here directly; keep the
     # 5-minute re-planner out of the way.
     replan = ha.automation_by_id("ihvac_recovery_on_change")
-    ha.call("automation", "turn_off", entity_id=replan)
+    measure = ha.automation_by_id("ihvac_measure_recovery")
+    ha.call("automation", "turn_off", entity_id=[replan, measure])
+    reset_learning(ha)
     # A fresh CI instance has no saved helper values; set everything the
     # package reads (later sections rely on the setback values too).
     for eid, v in {
         "input_number.nighttime_setback_temperature": 65,
-        "input_number.moderate_cold_setback_temperature": 67,
-        "input_number.extreme_cold_setback_temperature": 68,
+        "input_number.setback_max_recovery": 90,
         "input_number.moderate_cold_threshold": 32,
         "input_number.extreme_cold_threshold": 15,
     }.items():
@@ -322,7 +351,7 @@ def recovery_math(ha: HA) -> None:
     settle()
     outdoor = ha.state("sensor.outdoor_temperature_most_recent")
     check("outdoor template follows source", outdoor and outdoor["state"] == "50.0", outdoor and outdoor["state"])
-    ha.call("automation", "turn_on", entity_id=replan)
+    ha.call("automation", "turn_on", entity_id=[replan, measure])
 
 
 def heating_automations(ha: HA) -> None:
@@ -332,15 +361,50 @@ def heating_automations(ha: HA) -> None:
     replan = ha.automation_by_id("ihvac_recovery_on_change")
     ha.call("automation", "turn_off", entity_id=replan)
 
+    measure = ha.automation_by_id("ihvac_measure_recovery")
+    ha.call("automation", "turn_off", entity_id=measure)
+    reset_learning(ha)
     ha.call("climate", "set_hvac_mode", entity_id=CLIMATE, hvac_mode="heat")
-    for outdoor, want in ((50, 65), (20, 67), (5, 68)):
+
+    # No model: the calculated setback is just the minimum.
+    ha.set_number("input_number.sandbox_heat_loss", 0)
+    ha.set_number("input_number.sandbox_heating_power", 0)
+    sb = refresh_setback(ha)
+    check("no model -> setback = minimum (65)", sb and float(sb["state"]) == 65, sb and sb["state"])
+    check("demo weather has no hourly forecast -> daily low used", sb and sb["attributes"].get("forecast_type") == "daily",
+          sb and sb["attributes"].get("forecast_type"))
+
+    # Model: tonight's setback follows the forecast low, never below the minimum.
+    ha.set_number("input_number.sandbox_heat_loss", 0.0734)
+    ha.set_number("input_number.sandbox_heating_power", 7.48)
+    results = {}
+    for outdoor in (50, 20, -10):
         ha.set_number("input_number.sandbox_outdoor_temp", outdoor)
+        sb = refresh_setback(ha)
+        low = sb["attributes"].get("overnight_low_f")
+        check(f"{outdoor}°F now: overnight low includes current outdoor", low is not None and low <= outdoor, f"low {low}")
+        want = setback_ref(low=low, k=0.0734, power=7.48, target=70, minimum=65, limit=90)
+        got = float(sb["state"])
+        results[outdoor] = got
+        check(f"{outdoor}°F now (low {low}) -> setback {want}", got == want, f"got {got} ({sb['attributes'].get('reason')})")
         ha.call("climate", "set_temperature", entity_id=CLIMATE, temperature=70)  # daytime setpoint
         settle()
         ha.call("automation", "trigger", entity_id=setback, skip_condition=False)
         settle()
-        got = ha.state(CLIMATE)["attributes"].get("temperature")
-        check(f"setback at {outdoor}°F outdoor -> {want}", got is not None and abs(got - want) < 0.6, f"got {got}")
+        sp = ha.state(CLIMATE)["attributes"].get("temperature")
+        check(f"22:00 setback applies the calculated {got}", sp is not None and abs(sp - got) < 0.6, f"got {sp}")
+    check("colder night -> shallower setback", results[-10] >= results[20] >= results[50], str(results))
+    check("-10°F night is limited above the minimum", results[-10] > 65, str(results))
+
+    # A faster furnace (learned factor 0.7) allows a deeper cold-night setback.
+    ha.post("/api/events/ihvac_recovery_measured", {"factor": 0.7, "samples": 3})
+    sb = refresh_setback(ha)
+    low = sb["attributes"].get("overnight_low_f")
+    want = setback_ref(low=low, k=0.0734, power=7.48, target=70, minimum=65, limit=90, factor=0.7)
+    check(f"factor 0.7 at -10°F -> setback {want}", float(sb["state"]) == want, sb["state"])
+    check("faster furnace -> setback no shallower", float(sb["state"]) <= results[-10], f"{sb['state']} vs {results[-10]}")
+    reset_learning(ha)
+    ha.call("automation", "turn_on", entity_id=measure)
 
     # Already set below the setback by hand: setback must not raise it.
     ha.set_number("input_number.sandbox_outdoor_temp", 50)
@@ -363,6 +427,71 @@ def heating_automations(ha: HA) -> None:
     settle()
     got = ha.state(CLIMATE)["attributes"].get("temperature")
     check("morning heat-up does nothing outside heat mode", got is not None and abs(got - 76) < 0.6, f"got {got}")
+    ha.call("automation", "turn_on", entity_id=replan)
+
+
+def measure_recovery(ha: HA) -> None:
+    print("Heat-up measurement (learning)")
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(ha.get("/api/config")["time_zone"])
+    now = datetime.now(tz)
+    if now.hour < 1 or now.hour >= 22:
+        print("  SKIP  too close to midnight for wake-time arithmetic")
+        return
+    replan = ha.automation_by_id("ihvac_recovery_on_change")
+    ha.call("automation", "turn_off", entity_id=replan)
+    reset_learning(ha)
+    k, power, indoor, outdoor = 0.0734, 7.48, 63.0, 40.0
+    for eid, v in {"input_number.sandbox_heat_loss": k, "input_number.sandbox_heating_power": power,
+                   "input_number.sandbox_indoor_temp": indoor, "input_number.sandbox_outdoor_temp": outdoor,
+                   "input_number.target_temperature": 70, "input_number.ihvac_recovery_predicted": 0}.items():
+        ha.set_number(eid, v)
+    ha.call("input_datetime", "set_datetime", entity_id="input_datetime.target_wake_up_time",
+            time=(now + timedelta(minutes=60)).strftime("%H:%M:00"))
+    ha.call("climate", "set_hvac_mode", entity_id=CLIMATE, hvac_mode="heat")
+    ha.call("climate", "set_temperature", entity_id=CLIMATE, temperature=63)
+    settle()
+    ha.call("climate", "set_temperature", entity_id=CLIMATE, temperature=70)
+    settle()
+    pred = float(ha.state("input_number.ihvac_recovery_predicted")["state"])
+    want = 60 / k * math.log((power - k * (indoor - outdoor)) / (power - k * (70 - outdoor)))
+    check(f"heat-up start records prediction {want:.1f} min", abs(pred - want) < 0.2, f"got {pred}")
+
+    # Pretend the run began 50 min ago, then the house reaches the target.
+    ha.call("input_datetime", "set_datetime", entity_id="input_datetime.ihvac_recovery_started",
+            datetime=(datetime.now(tz) - timedelta(minutes=50)).strftime("%Y-%m-%d %H:%M:%S"))
+    ha.set_number("input_number.sandbox_indoor_temp", 69.6)
+    settle(2)
+    f = ha.state("sensor.intelligent_hvac_recovery_speed_factor")
+    want_f = round(0.7 * 1 + 0.3 * min(max(50 / pred, 0.5), 1.5), 3)
+    got_f = float(f["state"]) if f else None
+    check(f"reaching target teaches factor {want_f}", got_f is not None and abs(got_f - want_f) < 0.005, f"got {f and f['state']}")
+    check("measured sample counted", f and int(f["attributes"].get("samples", 0)) == 1, f and f["attributes"])
+    pred = float(ha.state("input_number.ihvac_recovery_predicted")["state"])
+    check("run cleared after measuring", pred == 0, f"got {pred}")
+
+    # A run cut short (setpoint lowered) is discarded, not measured.
+    ha.set_number("input_number.sandbox_indoor_temp", 63)
+    ha.call("climate", "set_temperature", entity_id=CLIMATE, temperature=63)
+    settle()
+    ha.call("climate", "set_temperature", entity_id=CLIMATE, temperature=70)
+    settle()
+    ha.call("climate", "set_temperature", entity_id=CLIMATE, temperature=64)
+    settle()
+    pred = float(ha.state("input_number.ihvac_recovery_predicted")["state"])
+    check("setpoint lowered mid-run -> run discarded", pred == 0, f"got {pred}")
+
+    # Daytime bump (far from wake-up) is not measured.
+    ha.call("input_datetime", "set_datetime", entity_id="input_datetime.target_wake_up_time",
+            time=(now + timedelta(minutes=300)).strftime("%H:%M:00"))
+    ha.call("climate", "set_temperature", entity_id=CLIMATE, temperature=70)
+    settle()
+    pred = float(ha.state("input_number.ihvac_recovery_predicted")["state"])
+    check("raise 5 h before wake-up is not timed", pred == 0, f"got {pred}")
+
+    reset_learning(ha)
+    ha.call("input_datetime", "set_datetime", entity_id="input_datetime.target_wake_up_time", time="09:00:00")
+    ha.set_number("input_number.sandbox_indoor_temp", 60)
     ha.call("automation", "turn_on", entity_id=replan)
 
 
@@ -487,6 +616,7 @@ def main() -> int:
     ensure_integration(ha)
     recovery_math(ha)
     heating_automations(ha)
+    measure_recovery(ha)
     fallback_heat_up(ha)
     season_switch(ha)
     if args.restart:

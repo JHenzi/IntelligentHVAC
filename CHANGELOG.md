@@ -4,6 +4,22 @@ Versions follow Home Assistant's format: `1.2.0b1` is a beta (published as a Git
 
 
 ## Unreleased
+- **Night setback is calculated, not tiered.** The fixed normal / moderate-cold /
+  extreme-cold setback temperatures are gone. `sensor.intelligent_hvac_night_setback`
+  picks tonight's setback: the lowest temperature the furnace can recover from
+  within *Longest Morning Heat-up* (new helper, default 90 min) at the forecast
+  overnight low, never below *Night Setback Minimum*. Mild nights coast toward
+  the minimum; cold nights set back less. The time budget allows for the model's
+  backtest error, and heating power is derated when the low is colder than the
+  model has seen. Uses the hourly forecast when available, else the daily low.
+- **Learns from every morning.** *Smart Recovery: Measure Heat-up* times each
+  pre-wake heat-up and compares it with the physics prediction;
+  `sensor.intelligent_hvac_recovery_speed_factor` keeps a running actual/predicted
+  ratio (restored across restarts). The start time and the setback both use it,
+  so a furnace that beats the model starts later and sets back deeper.
+  Removed helpers: `moderate_cold_setback_temperature`, `extreme_cold_setback_temperature`.
+- Dashboard: dropped the tile for the long-gone *Update Smart Recovery Start
+  Time Daily* automation.
 - Smart start is dynamic: it predicts the indoor temperature at heat-up time
   (coasting toward outdoor, floored at the thermostat's real setpoint, using the
   larger of the model's and tonight's observed heat loss), re-plans every 5 min,

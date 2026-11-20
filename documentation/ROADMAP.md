@@ -29,7 +29,8 @@ Recorder history is usually short (21 days on that install, and climate entities
 
 ## P1: closed loop
 
-- [ ] Morning outcome tracking: when the target was actually reached vs the wake-up time (sensor + dashboard card), auto-tuning the buffer.
+- [x] Morning outcome tracking: each heat-up is timed against the prediction; the running actual/predicted ratio (`sensor.intelligent_hvac_recovery_speed_factor`) scales the start time and the setback.
+- [x] Calculated night setback: as deep as the furnace can recover from within a time limit at the forecast low (`sensor.intelligent_hvac_night_setback`), replacing the fixed cold tiers.
 - [x] Learning runs in the executor; linear-time segmentation — #6.
 - [ ] Indoor sensor weights honoured; option to exclude the thermostat's own reading.
 - [ ] Manual-override detection (heating and cooling); documented conflicts with Ecobee Smart Recovery / Follow Me.

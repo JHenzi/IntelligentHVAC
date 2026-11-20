@@ -36,14 +36,9 @@ views:
       icon: mdi:weather-night
     - type: markdown
       content: |-
-        {%- set out = states('sensor.outdoor_temperature_most_recent') | float(50) -%}
-        {%- if out < states('input_number.extreme_cold_threshold') | float(15) -%}
-          {%- set sb = states('input_number.extreme_cold_setback_temperature') | float(68) -%}{%- set why = 'extreme cold' -%}
-        {%- elif out < states('input_number.moderate_cold_threshold') | float(32) -%}
-          {%- set sb = states('input_number.moderate_cold_setback_temperature') | float(67) -%}{%- set why = 'moderate cold' -%}
-        {%- else -%}
-          {%- set sb = states('input_number.nighttime_setback_temperature') | float(65) -%}{%- set why = 'normal' -%}
-        {%- endif -%}
+        {%- set sb = states('sensor.intelligent_hvac_night_setback') | float(states('input_number.nighttime_setback_temperature') | float(65)) -%}
+        {%- set low = state_attr('sensor.intelligent_hvac_night_setback', 'overnight_low_f') -%}
+        {%- set why = state_attr('sensor.intelligent_hvac_night_setback', 'reason') or 'minimum' -%}
         {%- set sp = state_attr('climate.thermostat', 'temperature') | float(none) -%}
         {%- set setback_on = is_state('automation.turn_down_heat_at_night_dynamic_setback', 'on') -%}
         {%- set heatup_on = is_state('automation.smart_recovery_morning_heat_up', 'on') -%}
@@ -51,7 +46,7 @@ views:
         > ⚠️ **Thermostat is in {{ states('climate.thermostat') }}, not heat.** The setback and morning heat-up only run in heat mode.
 
         {% endif -%}
-        **22:00** · {% if setback_on %}set back to **{{ sb | int }}°F** ({{ why }}, {{ out | round(0) | int }}°F outside){% if sp is not none and sp <= sb %}. Already at {{ sp | int }}°F, so it stays.{% endif %}{% else %}~~setback~~ off{% endif %}
+        **22:00** · {% if setback_on %}set back to **{{ sb | int }}°F** ({{ why }}{% if low is number %}; low {{ low | round(0) | int }}°F{% endif %}){% if sp is not none and sp <= sb %}. Already at {{ sp | int }}°F, so it stays.{% endif %}{% else %}~~setback~~ off{% endif %}
 
         **{{ states('input_datetime.smart_recovery_start_time')[:5] }}** · {% if heatup_on %}heat up to **{{ states('input_number.target_temperature') | float(0) | round(0) | int }}°F** ({{ states('input_number.scaled_recovery_time') | float(0) | round(0) | int }} min before wake){% else %}~~heat-up~~ off{% endif %}
 
@@ -184,12 +179,13 @@ views:
       heading: Housekeeping · leave on
       heading_style: subtitle
     - type: tile
-      entity: automation.update_smart_recovery_start_time_daily
-      name: Recompute at midnight
-      grid_options: {columns: 6}
-    - type: tile
       entity: automation.update_recovery_values_on_change
       name: Recompute on change
+      grid_options: {columns: 6}
+    - type: tile
+      entity: automation.smart_recovery_measure_heat_up
+      name: Learn from each heat-up
+      state_content: [state, last_triggered]
       grid_options: {columns: 6}
     - type: tile
       entity: script.intelligent_hvac_update_recovery
@@ -262,17 +258,30 @@ views:
       show_header_toggle: false
       entities:
       - entity: input_number.nighttime_setback_temperature
-        name: Normal night
-      - entity: input_number.moderate_cold_setback_temperature
-        name: Cold night
-      - entity: input_number.extreme_cold_setback_temperature
-        name: Very cold night
+        name: Coolest overnight
+      - entity: input_number.setback_max_recovery
+        name: Longest morning heat-up
       - type: section
-        label: What counts as cold (outdoor)
-      - entity: input_number.moderate_cold_threshold
-        name: Cold below
-      - entity: input_number.extreme_cold_threshold
-        name: Very cold below
+        label: Calculated for tonight
+      - entity: sensor.intelligent_hvac_night_setback
+        name: Tonight's setback
+      - type: attribute
+        entity: sensor.intelligent_hvac_night_setback
+        attribute: overnight_low_f
+        name: Forecast overnight low
+        icon: mdi:thermometer-low
+        suffix: " °F"
+      - type: attribute
+        entity: sensor.intelligent_hvac_night_setback
+        attribute: heat_up_from_setback_min
+        name: Heat-up from setback
+        icon: mdi:timer-outline
+        suffix: " min"
+      - type: attribute
+        entity: sensor.intelligent_hvac_night_setback
+        attribute: reason
+        name: Why
+        icon: mdi:information-outline
     - type: entities
       title: Season mode
       show_header_toggle: false
@@ -361,6 +370,14 @@ views:
           entity: sensor.intelligent_hvac_time_to_target_5degf_heat
           attribute: backtest_runs
           name: Heat-ups tested
+          icon: mdi:counter
+        - entity: sensor.intelligent_hvac_recovery_speed_factor
+          name: Real vs predicted heat-up
+          icon: mdi:speedometer
+        - type: attribute
+          entity: sensor.intelligent_hvac_recovery_speed_factor
+          attribute: samples
+          name: Mornings measured
           icon: mdi:counter
         - type: section
           label: Right now
