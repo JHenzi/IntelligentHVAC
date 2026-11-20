@@ -23,7 +23,7 @@
 
 You said you wanted **70°F at 7:00 AM**. That's all you did.
 
-Overnight the house relaxed to a cool setback — you slept comfortably and didn't pay to heat an empty-feeling house all night. Then, at exactly the right minute (not "5 AM, just in case"), the heat came on, because Intelligent HVAC *knows how long **your** house takes to climb from 65°F to 70°F at today's outdoor temperature*. You wake up to 70°F.
+Overnight the house relaxed to a cool setback, as deep as tonight's weather allows: on a mild night it simply coasts and the furnace never runs; on a cold night it holds back only as far as the furnace can make up by morning. Then, at exactly the right minute (not "5 AM, just in case"), the heat came on, because Intelligent HVAC *knows how long **your** house takes to climb from 65°F to 70°F at today's outdoor temperature*. You wake up to 70°F.
 
 In summer it flips: on a cool night it tells you to **open the windows** and lets the AC rest, then holds comfort early on mornings that are about to turn hot. Same brain, different season — and a daily forecast check switches the mode for you.
 
@@ -45,6 +45,8 @@ No cloud. No guesswork. No hard-coded "start heating at 6 AM". Just *"it takes t
 - 📐 **Models four kinds of thermal behaviour:** active heating, active cooling, passive heat loss, and passive heat gain.
 - 🎯 **Answers the questions automations care about:** *How long to recover 5°F? Can the AC keep up today? When should I start pre-cooling?*
 - ⏰ **A smart start that watches the night unfold.** The heat-up time is planned from where the house will *actually* be at dawn: your real setpoint, the indoor and outdoor temperatures, and how fast the house is losing heat tonight. It re-plans every 5 minutes, then locks in shortly before the start so it never drifts late.
+- 🌙 **A setback sized to tonight's weather.** You choose the coolest you're comfortable with; on cold nights the setback is raised to the lowest temperature your furnace can recover from in the time you allow, using the forecast overnight low.
+- 📏 **Learns from every morning.** Each heat-up is timed against the prediction. The running ratio of actual to predicted corrects both the start time and the setback, so the plan converges on your actual furnace.
 - 🌬️ **Knows when to do nothing.** Cool night and the house is already shedding heat? It tells you to open the windows or coast instead of burning AC.
 - 📈 **Honest about uncertainty.** Every fit is backtested against your own past heat-ups; confidence is driven by the measured error in minutes.
 - 🔌 **Works with Ecobee and HomeKit thermostats** — anything exposing `hvac_action` and `current_temperature`. See [COMPATIBILITY.md](documentation/COMPATIBILITY.md).
@@ -174,13 +176,28 @@ Every 5 minutes overnight the comfort package re-plans the morning heat-up:
 4. **Commit 15 minutes before the start.** After that the time is fixed and the morning automation fires on schedule.
 5. **Never skip a morning.** If a colder-than-expected night means the start is already due, it heats immediately; a fallback automation backs it up if Home Assistant was down at the start minute.
 
-The night setback is calculated too: as deep as *Night Setback Minimum* on mild nights, shallower on cold nights so the heat-up fits in *Longest Morning Heat-up*. Every morning's heat-up is timed and compared with the prediction, and the running ratio corrects both the start time and the setback ([details](packages/README.md#night-setback-as-deep-as-the-furnace-can-recover-from)).
-
 Wake-up time, target, buffer and the maximum lead are all on the dashboard's Settings view.
+
+## 🌙 Night setback
+
+For a gas furnace, a cooler house always loses less heat, so a deeper setback always saves energy. The real limits are comfort, and how long the morning heat-up is allowed to take. So the setback is calculated each night instead of picked from fixed tiers:
+
+1. **You set the floor.** *Night Setback Minimum* is the coolest you want the house. On mild nights the house drifts toward it, often never reaching it, and the furnace stays off until morning.
+2. **Cold nights get a shallower setback.** From the forecast overnight low and the learned model, it finds the lowest temperature the furnace can recover from within *Longest Morning Heat-up* (default 90 min):
+
+   `heat-up minutes = 60/k · ln((P − k·(setback − outdoor)) / (P − k·(target − outdoor)))`, solved for the setback.
+
+   *k* is the learned heat-loss rate; *P* is the learned heating power.
+3. **It stays on the safe side.** The time budget is reduced by the model's backtest error. Heating power is derated when the low is colder than anything the model has seen, and the derating relaxes as cold-weather data comes in.
+4. **Every morning teaches it.** *Smart Recovery: Measure Heat-up* times each heat-up against the prediction. `sensor.intelligent_hvac_recovery_speed_factor` keeps a running actual/predicted ratio and scales both the start time and the setback.
+
+Tonight's setback, the forecast low it used and the expected heat-up are on the dashboard (Settings → Setback). Details: [packages/README.md](packages/README.md#night-setback-as-deep-as-the-furnace-can-recover-from).
+
+> Heat pump? A long recovery can bring on electric backup heat. Keep *Longest Morning Heat-up* short or the minimum higher.
 
 ## 🗺️ Roadmap
 
-The heating model is being rebuilt on physics (heat-loss + heating-power) and backtested against real recoveries; until that lands, the comfort package includes a **fixed-lead fallback heat-up** so mornings are warm regardless. Details and status: [documentation/ROADMAP.md](documentation/ROADMAP.md).
+The heating model runs on physics (heat loss + heating power), is backtested against real recoveries, and is corrected by every measured morning. A fixed-lead **fallback heat-up** stays in place as a safety net. Details and status: [documentation/ROADMAP.md](documentation/ROADMAP.md).
 
 Feedback and issues very welcome: <https://github.com/JHenzi/IntelligentHVAC/issues>
 
