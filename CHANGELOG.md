@@ -18,6 +18,12 @@ Versions follow Home Assistant's format: `1.2.0b1` is a beta (published as a Git
   ratio (restored across restarts). The start time and the setback both use it,
   so a furnace that beats the model starts later and sets back deeper.
   Removed helpers: `moderate_cold_setback_temperature`, `extreme_cold_setback_temperature`.
+- **The start time no longer drifts during the day.** Before the setback, the
+  plan is for the coming night (daytime setpoint until the setback, coasting
+  toward the forecast overnight low, floored at tonight's setback) instead of
+  "house is at 70 now, so just the buffer" (which showed 06:58 all day).
+- **Setback time is a setting** (*Setback Starts*, new `input_datetime.setback_time`)
+  instead of a hard-coded 22:00. Set it on upgrade; it starts at 00:00.
 - Dashboard: dropped the tile for the long-gone *Update Smart Recovery Start
   Time Daily* automation.
 - Smart start is dynamic: it predicts the indoor temperature at heat-up time
