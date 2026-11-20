@@ -246,6 +246,9 @@ def recovery_math(ha: HA) -> None:
         "input_number.extreme_cold_threshold": 15,
     }.items():
         ha.set_number(eid, v)
+    # Setback already started (an hour ago): the script tracks the live house.
+    ha.call("input_datetime", "set_datetime", entity_id="input_datetime.setback_time",
+            time=(datetime.now(tz) - timedelta(minutes=60)).strftime("%H:%M:00"))
     defaults = {
         "input_number.target_temperature": 70,
         "input_number.recovery_time_buffer": 5,
@@ -342,6 +345,31 @@ def recovery_math(ha: HA) -> None:
     check("plan already due -> setpoint raised to target now", sp is not None and abs(sp - 70) < 0.6, f"got {sp}")
     _, _, sp, *_ = run(wake_in=30, start=now + timedelta(minutes=20), setpoint=60, mode="cool")
     check("not in heat mode -> setpoint untouched", sp is not None and abs(sp - 60) < 0.6, f"got {sp}")
+
+    # Before tonight's setback: plan the coming night from the forecast and the
+    # calculated setback, not from the current (daytime) temperatures.
+    now = datetime.now(tz)
+    if 1 <= now.hour < 22:
+        night = (now + timedelta(minutes=60)).replace(second=0, microsecond=0)
+        ha.call("input_datetime", "set_datetime", entity_id="input_datetime.setback_time",
+                time=night.strftime("%H:%M:00"))
+        day = dict(setpoint=70, indoor_temp=70, outdoor_temp=40, heat_loss=0.0734, heating_power=7.48)
+        run(**day)
+        sb = refresh_setback(ha)
+        lead, st, _, wake, _, vals = run(**day)
+        low, setback = sb["attributes"]["overnight_low_f"], float(sb["state"])
+        coast = (wake - night).total_seconds() / 60
+        want = plan_lead(mins_to_wake=coast, indoor=70, outdoor=low, floor=setback, target=70, base=40,
+                         k=0.0734, power=7.48, buffer=5, max_lead=360)
+        check(f"before setback: planned from forecast low {low} and setback {setback} -> {want} min",
+              abs(lead - want) <= 1, f"got {lead}")
+        check("before setback: not just the buffer (house at 70 now)", lead > 5, f"got {lead}")
+        warm, st2, *_ = run(**dict(day, indoor_temp=67))
+        check("before setback: current indoor temp doesn't move the start", st2 == st, f"{st} -> {st2}")
+        ha.call("input_datetime", "set_datetime", entity_id="input_datetime.setback_time",
+                time=(now - timedelta(minutes=60)).strftime("%H:%M:00"))
+    else:
+        print("  SKIP  pending-setback plan (needs setback and wake-up on the same night)")
 
     for eid, v in defaults.items():
         ha.set_number(eid, v)

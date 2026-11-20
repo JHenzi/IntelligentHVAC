@@ -37,6 +37,12 @@ input_datetime:
     has_date: false
     has_time: true
     icon: mdi:clock-start
+  # When the nightly setback starts. Earlier = more savings (the house coasts longer).
+  setback_time:
+    name: Setback Starts
+    has_date: false
+    has_time: true
+    icon: mdi:weather-night
   # Written by the heat-up measurement automation (when the current run began).
   ihvac_recovery_started:
     name: Heat-up Run Started
@@ -250,6 +256,7 @@ template:
           - input_number.setback_max_recovery
           - input_number.target_temperature
           - input_datetime.target_wake_up_time
+          - input_datetime.setback_time
           - sensor.intelligent_hvac_recovery_speed_factor
           - sensor.intelligent_hvac_time_to_target_5degf_heat
     actions:
@@ -267,11 +274,14 @@ template:
             {% set w = states('input_datetime.target_wake_up_time') %}
             {% set d = today_at(w if w not in ['unknown', 'unavailable'] else '07:00:00') %}
             {{ (d if d > now() else d + timedelta(days=1)).isoformat() }}
-          # Coldest of: the forecast between 22:00 and wake-up (hourly temps, or
+          # Coldest of: the forecast between setback and wake-up (hourly temps, or
           # the daily low for the wake-up day), and the current outdoor temp.
           low: >-
             {% set wake = as_datetime(wake_dt) %}
-            {% set start = (wake - timedelta(days=1)).replace(hour=22, minute=0, second=0) %}
+            {% set st = states('input_datetime.setback_time') %}
+            {% set t = today_at(st if st not in ['unknown', 'unavailable', ''] else '22:00:00') %}
+            {% set start = wake.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0) %}
+            {% set start = start if start < wake else start - timedelta(days=1) %}
             {% set ns = namespace(t=[]) %}
             {% for f in ((fc | default({})).get('weather.home', {})).get('forecast', []) %}
               {% set ft = as_datetime(f.datetime) | as_local if f.datetime is defined else none %}
@@ -340,35 +350,66 @@ script:
     alias: Intelligent HVAC - Update Recovery Calculations
     description: >-
       Predicts the indoor temperature at heat-up time (passive decay toward the
-      outdoor temperature, floored at the thermostat's actual setpoint), works
-      out how long heating from there to the target takes, and sets the start
-      time. Re-run every 5 minutes overnight so it tracks the house; once the
-      start is within the commit window it stops changing (and if the house
-      has cooled faster than expected and the start is already due, it heats now).
+      outdoor temperature, floored at the setpoint), works out how long heating
+      from there to the target takes, and sets the start time. Before tonight's
+      setback it plans the coming night from the forecast (house at its daytime
+      setpoint until setback time, coasting toward the overnight low, floored at
+      tonight's setback), so the time doesn't drift with the daytime temperature.
+      After the setback it tracks the real house every 5 minutes; once the start
+      is within the commit window it stops changing (and if the house has cooled
+      faster than expected and the start is already due, it heats now).
     mode: single
     max_exceeded: silent
     sequence:
       - variables:
           commit_min: 15
-          outdoor: "{{ states('sensor.outdoor_temperature_most_recent') | float(32) }}"
           target: "{{ states('input_number.target_temperature') | float(70) }}"
           sp_raw: "{{ state_attr('climate.thermostat', 'temperature') }}"
-          # Where the thermostat will hold the house overnight. Use the real
-          # setpoint when heating; otherwise tonight's calculated setback.
+          tonight_setback: >-
+            {{ states('sensor.intelligent_hvac_night_setback')
+               | float(states('input_number.nighttime_setback_temperature') | float(65)) }}
+          wake_dt: >-
+            {% set w = states('input_datetime.target_wake_up_time') %}
+            {% set d = today_at(w if w not in ['unknown', 'unavailable'] else '07:00:00') %}
+            {{ (d if d > now() else d + timedelta(days=1)).isoformat() }}
+          mins_to_wake: "{{ ((as_datetime(wake_dt) - now()).total_seconds() / 60) | round(1) }}"
+          # The setback that precedes this wake-up (last "Setback Starts" before it).
+          night_start: >-
+            {% set st = states('input_datetime.setback_time') %}
+            {% set t = today_at(st if st not in ['unknown', 'unavailable', ''] else '22:00:00') %}
+            {% set wake = as_datetime(wake_dt) %}
+            {% set n = wake.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0) %}
+            {{ (n if n < wake else n - timedelta(days=1)).isoformat() }}
+          # Setback still to come: plan from tonight's forecast and setback, not now.
+          pending: >-
+            {{ now() < as_datetime(night_start) and is_state('climate.thermostat', 'heat')
+               and sp_raw is number and sp_raw | float > tonight_setback | float }}
+          outdoor: >-
+            {% set low = state_attr('sensor.intelligent_hvac_night_setback', 'overnight_low_f') %}
+            {% if pending and low is number %}{{ low | float }}
+            {% else %}{{ states('sensor.outdoor_temperature_most_recent') | float(32) }}{% endif %}
+          # Where the thermostat will hold the house overnight: tonight's setback
+          # before it starts, then the real setpoint while heating.
           floor_temp: >-
-            {% if is_state('climate.thermostat', 'heat') and sp_raw is number %}{{ sp_raw | float }}
-            {% else %}{{ states('sensor.intelligent_hvac_night_setback')
-                         | float(states('input_number.nighttime_setback_temperature') | float(65)) }}{% endif %}
+            {% if not pending and is_state('climate.thermostat', 'heat') and sp_raw is number %}{{ sp_raw | float }}
+            {% else %}{{ tonight_setback | float }}{% endif %}
+          # Temperature the coast starts from: the daytime setpoint (held until the
+          # setback) when pending, else the live indoor temperature.
           indoor: >-
-            {{ states('sensor.intelligent_hvac_learned_indoor_temperature')
-               | float(state_attr('climate.thermostat', 'current_temperature') | float(floor_temp)) }}
+            {% if pending %}{{ sp_raw | float }}
+            {% else %}{{ states('sensor.intelligent_hvac_learned_indoor_temperature')
+               | float(state_attr('climate.thermostat', 'current_temperature') | float(floor_temp)) }}{% endif %}
+          # Minutes the house coasts before heat-up: from the setback when pending.
+          coast_mins: >-
+            {{ ((as_datetime(wake_dt) - as_datetime(night_start)).total_seconds() / 60) | round(1)
+               if pending else mins_to_wake }}
           base: "{{ states('sensor.intelligent_hvac_time_to_target_5degf_heat') | float(0) }}"
           k_model: "{{ state_attr('sensor.intelligent_hvac_time_to_target_5degf_heat', 'heat_loss_per_hour') | float(0) }}"
           # Observed loss coefficient from the live trend, only while coasting
           # (heat idle, house falling, meaningfully warmer than outside).
           k_obs: >-
             {% set tr = states('sensor.intelligent_hvac_indoor_trend') | float(0) %}
-            {% if tr < -0.1 and indoor - outdoor > 3 and state_attr('climate.thermostat', 'hvac_action') != 'heating' %}
+            {% if not pending and tr < -0.1 and indoor - outdoor > 3 and state_attr('climate.thermostat', 'hvac_action') != 'heating' %}
               {{ [-tr / (indoor - outdoor), 0.3] | min }}
             {% else %}0{% endif %}
           k: "{{ [k_model | float, k_obs | float] | max }}"
@@ -379,16 +420,11 @@ script:
           buffer: "{{ states('input_number.recovery_time_buffer') | float(5) }}"
           fallback_lead: "{{ states('input_number.fallback_recovery_lead') | float(90) }}"
           max_lead: "{{ states('input_number.max_recovery_lead') | float(240) }}"
-          wake_dt: >-
-            {% set w = states('input_datetime.target_wake_up_time') %}
-            {% set d = today_at(w if w not in ['unknown', 'unavailable'] else '07:00:00') %}
-            {{ (d if d > now() else d + timedelta(days=1)).isoformat() }}
-          mins_to_wake: "{{ ((as_datetime(wake_dt) - now()).total_seconds() / 60) | round(1) }}"
           # Fixed point: lead -> predicted temp at start -> heat-up time -> lead.
           plan: >-
             {% set ns = namespace(lead=60.0, ts=floor_temp | float, heat=0.0) %}
             {% for i in range(10) %}
-              {% set hrs = [mins_to_wake | float - ns.lead, 0] | max / 60 %}
+              {% set hrs = [coast_mins | float - ns.lead, 0] | max / 60 %}
               {% set ts = outdoor + (indoor - outdoor) * (e ** (-(k | float) * hrs)) if k | float > 0 else indoor %}
               {% set ts = [[ts, indoor] | min, floor_temp | float] | max %}
               {% set need = target | float - ts %}
@@ -510,16 +546,16 @@ automation:
         data: { climate_entity: climate.thermostat }
     mode: single
 
-  # Heating season, evening: relax the setpoint, deeper setback when it is mild.
+  # Heating season, evening: relax the setpoint to tonight's calculated setback.
   - id: ihvac_nighttime_setback
     alias: Turn down heat at night (Dynamic Setback)
     description: >-
-      Sets back the temperature at 22:00 to tonight's calculated setback: the
+      Sets back the temperature at "Setback Starts" (e.g. 22:00) to tonight's calculated setback: the
       minimum on mild nights, shallower on cold nights so the morning heat-up
       stays within the longest heat-up you allow.
     triggers:
       - trigger: time
-        at: "22:00:00"
+        at: input_datetime.setback_time
     conditions:
       - condition: state
         entity_id: climate.thermostat
@@ -554,8 +590,10 @@ automation:
       - trigger: state
         entity_id:
           - sensor.intelligent_hvac_time_to_target_5degf_heat
+          - sensor.intelligent_hvac_night_setback
           - input_number.target_temperature
           - input_datetime.target_wake_up_time
+          - input_datetime.setback_time
       - trigger: state
         entity_id: climate.thermostat
         attribute: temperature

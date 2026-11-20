@@ -168,7 +168,7 @@ Read [documentation/ARCHITECTURE.md](documentation/ARCHITECTURE.md) for the laye
 
 ## ⏰ Smart start (winter mornings)
 
-Every 5 minutes overnight the comfort package re-plans the morning heat-up:
+During the day the start time is planned for the coming night from the forecast low and tonight's setback, so it stays put instead of following the daytime temperature. Once the setback starts, the comfort package re-plans every 5 minutes from the real house:
 
 1. **Predict the indoor temperature at heat-up time.** The house coasts toward the outdoor temperature but never below the thermostat's live setpoint, so a 60°F setback plans differently from a 64°F one.
 2. **Use tonight's real heat loss.** A one-hour trend sensor (`sensor.intelligent_hvac_indoor_trend`) measures how fast the house is cooling right now; the plan uses whichever is larger, that or the learned coefficient.
@@ -182,7 +182,7 @@ Wake-up time, target, buffer and the maximum lead are all on the dashboard's Set
 
 For a gas furnace, a cooler house always loses less heat, so a deeper setback always saves energy. The real limits are comfort, and how long the morning heat-up is allowed to take. So the setback is calculated each night instead of picked from fixed tiers:
 
-1. **You set the floor.** *Night Setback Minimum* is the coolest you want the house. On mild nights the house drifts toward it, often never reaching it, and the furnace stays off until morning.
+1. **You set when and how low.** *Setback Starts* (e.g. 22:00; earlier saves more, because the house coasts longer) and *Night Setback Minimum*, the coolest you want the house. On mild nights the house drifts toward it, often never reaching it, and the furnace stays off until morning.
 2. **Cold nights get a shallower setback.** From the forecast overnight low and the learned model, it finds the lowest temperature the furnace can recover from within *Longest Morning Heat-up* (default 90 min):
 
    `heat-up minutes = 60/k · ln((P − k·(setback − outdoor)) / (P − k·(target − outdoor)))`, solved for the setback.
