@@ -1,6 +1,8 @@
 """Sensor platform for Intelligent HVAC."""
 import logging
-from typing import Any
+from datetime import timedelta
+from dataclasses import dataclass
+from typing import Any, Callable
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.config_entries import ConfigEntry
@@ -8,6 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.device_registry import DeviceEntryType
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+import homeassistant.util.dt as dt_util
 
 from .const import DOMAIN
 from .const import (
@@ -16,6 +19,7 @@ from .const import (
     DEFAULT_COMFORT_COOL_TEMP,
     DEFAULT_PRECOOL_LEAD_MINUTES,
 )
+from . import diagnostics
 from .coordinator import IntelligentHVACCoordinator
 from .learning import (
     predict_active_cooling_rate,
@@ -150,6 +154,10 @@ async def async_setup_entry(
         PassiveGainRate75FSensor(coordinator, entry),
         TimeToDrop5FPassiveSensor(coordinator, entry),
     ]
+    # Diagnostics (house fingerprint, unusual days, warm-up accuracy)
+    sensors.extend(
+        DiagnosticSensor(coordinator, entry, description) for description in DIAGNOSTIC_SENSORS
+    )
     
     async_add_entities(sensors)
     _LOGGER.info("Intelligent HVAC sensor platform setup complete: %d sensors", len(sensors))
@@ -1401,3 +1409,191 @@ class TimeToDrop5FPassiveSensor(IntelligentHVACSensor):
             attrs["low_confidence_warning"] = model.confidence_score < 0.5
         
         return attrs
+
+
+# ---------------------------------------------------------------- diagnostics
+#
+# One numeric sensor per value (state_class measurement), so Home Assistant
+# keeps long-term statistics and the history graphs show trends over seasons.
+# Chart data (points, logs) lives in attributes excluded from the recorder.
+
+
+def _fit(c: IntelligentHVACCoordinator, key: str = "fit") -> dict[str, Any] | None:
+    return (c.diagnostics or {}).get(key)
+
+
+def _yesterday(c: IntelligentHVACCoordinator) -> dict[str, Any] | None:
+    d = c.diagnostics or {}
+    if not d.get("last_day_is_yesterday"):
+        return None
+    return d.get("last_day_scored") or d.get("last_day")
+
+
+def _balance_point(c: IntelligentHVACCoordinator) -> float | None:
+    f = _fit(c)
+    if not f or f["slope"] <= 0:
+        return None
+    return round(diagnostics.HDD_BASE_F + f["intercept"] / f["slope"], 1)
+
+
+def _last_run(c: IntelligentHVACCoordinator) -> dict[str, Any] | None:
+    return c.recoveries[-1] if c.recoveries else None
+
+
+def _get(obj: dict[str, Any] | None, key: str) -> Any:
+    return None if obj is None else obj.get(key)
+
+
+def _fingerprint_attrs(c: IntelligentHVACCoordinator) -> dict[str, Any]:
+    d = c.diagnostics or {}
+    f = d.get("fit") or {}
+    return {
+        "description": "Minutes of heating per heating degree day (base 65°F). "
+                       "Rising from season to season means the house or furnace got worse.",
+        "intercept_min": f.get("intercept"),
+        "r2": f.get("r2"),
+        "days": f.get("days"),
+        "sigma_min": f.get("sigma"),
+        "first_day": f.get("first_day"),
+        "last_day": f.get("last_day"),
+        "balance_point_f": _balance_point(c),
+        "days_recorded": d.get("days_recorded", 0),
+        "seasons": d.get("seasons", {}),
+        "points": d.get("points", []),
+    }
+
+
+def _yesterday_attrs(c: IntelligentHVACCoordinator) -> dict[str, Any]:
+    y = _yesterday(c) or {}
+    return {k: y.get(k) for k in ("day", "mean_outdoor", "coverage", "unusual", "direction")}
+
+
+def _unusual_attrs(c: IntelligentHVACCoordinator) -> dict[str, Any]:
+    days = (c.diagnostics or {}).get("unusual_recent", [])
+    return {
+        "window_days": diagnostics.RECENT_UNUSUAL_DAYS,
+        "days": [
+            {k: d.get(k) for k in ("day", "hdd", "mean_outdoor", "heat_min", "expected_min", "residual_min", "direction")}
+            for d in days
+        ],
+    }
+
+
+def _bias_attrs(c: IntelligentHVACCoordinator) -> dict[str, Any]:
+    return {
+        "description": "Actual minus predicted heat-up minutes over recent mornings "
+                       "(+ = slower than predicted).",
+        **c.recovery_bias,
+        "log": c.recoveries[-30:],
+    }
+
+
+def _warm(c: IntelligentHVACCoordinator, offset_days: int = 0) -> dict[str, Any] | None:
+    day = (dt_util.now().date() + timedelta(days=offset_days)).isoformat()
+    return ((c.diagnostics or {}).get("warm_days") or {}).get(day)
+
+
+def _warm_attrs(c: IntelligentHVACCoordinator) -> dict[str, Any]:
+    d = c.diagnostics or {}
+    f = d.get("warm_fit") or {}
+    today, tomorrow = _warm(c) or {}, _warm(c, 1) or {}
+    return {
+        "description": "How warm the house is expected to get on its own today, "
+                       "learned from daily indoor peaks vs outdoor highs.",
+        "forecast_high_f": today.get("forecast_high"),
+        "condition": today.get("condition"),
+        "sunny": today.get("sunny"),
+        "uv_index": today.get("uv_index"),
+        "tomorrow_forecast_high_f": tomorrow.get("forecast_high"),
+        "tomorrow_indoor_peak_f": tomorrow.get("indoor_peak"),
+        "tomorrow_condition": tomorrow.get("condition"),
+        "tomorrow_sunny": tomorrow.get("sunny"),
+        "slope": f.get("slope"),
+        "intercept": f.get("intercept"),
+        "r2": f.get("r2"),
+        "error_f": f.get("error_f"),
+        "days": f.get("days"),
+        "high_range_f": f.get("high_range"),
+    }
+
+
+@dataclass(frozen=True)
+class DiagnosticDescription:
+    key: str
+    name: str
+    unit: str | None
+    icon: str
+    value: Callable[[IntelligentHVACCoordinator], Any]
+    attrs: Callable[[IntelligentHVACCoordinator], dict[str, Any]] | None = None
+    precision: int | None = None
+
+
+DIAGNOSTIC_SENSORS: tuple[DiagnosticDescription, ...] = (
+    DiagnosticDescription("heating_fingerprint", "Heating Fingerprint", "min/°F·d", "mdi:fingerprint",
+                          lambda c: _get(_fit(c), "slope"), _fingerprint_attrs, 2),
+    DiagnosticDescription("heating_fingerprint_60d", "Heating Fingerprint 60 Days", "min/°F·d", "mdi:fingerprint",
+                          lambda c: _get(_fit(c, "rolling_fit"), "slope"),
+                          lambda c: {k: _get(_fit(c, "rolling_fit"), k) for k in ("intercept", "r2", "days")}, 2),
+    DiagnosticDescription("heating_fingerprint_fit", "Heating Fingerprint Fit", "%", "mdi:chart-scatter-plot",
+                          lambda c: None if _fit(c) is None else round(_fit(c)["r2"] * 100, 1), None, 1),
+    DiagnosticDescription("heating_baseline", "Heating Baseline", "min", "mdi:axis-y-arrow",
+                          lambda c: _get(_fit(c), "intercept"), None, 1),
+    DiagnosticDescription("heating_balance_point", "Heating Balance Point", "°F", "mdi:thermometer-check",
+                          _balance_point, None, 1),
+    DiagnosticDescription("heating_minutes_yesterday", "Heating Minutes Yesterday", "min", "mdi:fire",
+                          lambda c: _get(_yesterday(c), "heat_min"), _yesterday_attrs, 0),
+    DiagnosticDescription("heating_degree_days_yesterday", "Heating Degree Days Yesterday", "°F·d", "mdi:snowflake-thermometer",
+                          lambda c: _get(_yesterday(c), "hdd"), _yesterday_attrs, 1),
+    DiagnosticDescription("heating_expected_minutes_yesterday", "Heating Expected Minutes Yesterday", "min", "mdi:fire-circle",
+                          lambda c: _get(_yesterday(c), "expected_min"), _yesterday_attrs, 0),
+    DiagnosticDescription("heating_deviation_yesterday", "Heating Deviation Yesterday", "min", "mdi:delta",
+                          lambda c: _get(_yesterday(c), "residual_min"), _yesterday_attrs, 0),
+    DiagnosticDescription("unusual_heating_days", "Unusual Heating Days", "days", "mdi:alert-circle-outline",
+                          lambda c: len((c.diagnostics or {}).get("unusual_recent", [])) if _fit(c) else None,
+                          _unusual_attrs, 0),
+    DiagnosticDescription("expected_indoor_peak", "Expected Indoor Peak", "°F", "mdi:weather-sunny-alert",
+                          lambda c: _get(_warm(c), "indoor_peak"), _warm_attrs, 1),
+    DiagnosticDescription("indoor_peak_yesterday", "Indoor Peak Yesterday", "°F", "mdi:home-thermometer",
+                          lambda c: _get((c.diagnostics or {}).get("last_peak"), "indoor_peak"),
+                          lambda c: (c.diagnostics or {}).get("last_peak") or {}, 1),
+    DiagnosticDescription("indoor_peak_yesterday_predicted", "Indoor Peak Yesterday Predicted", "°F", "mdi:home-thermometer-outline",
+                          lambda c: _get((c.diagnostics or {}).get("last_peak"), "predicted_peak"), None, 1),
+    DiagnosticDescription("warmup_last_predicted", "Warm-up Last Predicted", "min", "mdi:timer-outline",
+                          lambda c: _get(_last_run(c), "predicted_min"), lambda c: _last_run(c) or {}, 1),
+    DiagnosticDescription("warmup_last_actual", "Warm-up Last Actual", "min", "mdi:timer-check-outline",
+                          lambda c: _get(_last_run(c), "actual_min"), lambda c: _last_run(c) or {}, 1),
+    DiagnosticDescription("warmup_last_error", "Warm-up Last Error", "min", "mdi:timer-alert-outline",
+                          lambda c: _get(_last_run(c), "error_min"), lambda c: _last_run(c) or {}, 1),
+    DiagnosticDescription("warmup_prediction_bias", "Warm-up Prediction Bias", "min", "mdi:scale-unbalanced",
+                          lambda c: c.recovery_bias.get("mean_error_min"), _bias_attrs, 1),
+    DiagnosticDescription("warmup_prediction_mae", "Warm-up Prediction Error", "min", "mdi:target",
+                          lambda c: c.recovery_bias.get("mae_min"),
+                          lambda c: {k: c.recovery_bias.get(k) for k in ("runs", "runs_total", "verdict")}, 1),
+)
+
+
+class DiagnosticSensor(IntelligentHVACSensor):
+    """A numeric diagnostic value, recorded as long-term statistics."""
+
+    _unrecorded_attributes = frozenset({"points", "log", "seasons", "days", "description"})
+
+    def __init__(
+        self,
+        coordinator: IntelligentHVACCoordinator,
+        entry: ConfigEntry,
+        description: DiagnosticDescription,
+    ) -> None:
+        super().__init__(coordinator, entry, name=description.name, unique_id=description.key, icon=description.icon)
+        self._desc = description
+        self._attr_state_class = SensorStateClass.MEASUREMENT
+        self._attr_native_unit_of_measurement = description.unit
+        self._attr_suggested_display_precision = description.precision
+
+    @property
+    def native_value(self) -> float | None:
+        value = self._desc.value(self.coordinator)
+        return None if value is None else float(value)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        return self._desc.attrs(self.coordinator) if self._desc.attrs else None

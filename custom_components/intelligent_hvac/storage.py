@@ -314,3 +314,62 @@ def _make_serializable(obj: Any) -> Any:
     else:
         return obj
 
+
+
+async def _async_read_json(hass: HomeAssistant, path: Path, default: Any) -> Any:
+    def _read():
+        if not path.exists():
+            return default
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+
+    try:
+        return await hass.async_add_executor_job(_read)
+    except Exception as err:
+        _LOGGER.error("Error reading %s: %s", path, err, exc_info=True)
+        return default
+
+
+async def _async_write_json(hass: HomeAssistant, path: Path, data: Any) -> None:
+    def _write():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=1, default=str)
+        tmp.replace(path)
+
+    try:
+        await hass.async_add_executor_job(_write)
+    except Exception as err:
+        _LOGGER.error("Error writing %s: %s", path, err, exc_info=True)
+
+
+# Daily heating record and warm-up log. Not covered by the segment schema
+# archive: they hold plain measurements and are kept for years.
+async def async_load_daily(hass: HomeAssistant, entry_id: str) -> tuple[list[dict[str, Any]], dict[str, float]]:
+    """Return (days, outdoor highs by ISO day)."""
+    data = await _async_read_json(hass, _get_entry_file_path(hass, entry_id, f"daily_{entry_id}.json"), {})
+    if not isinstance(data, dict):
+        return [], {}
+    return data.get("days", []), data.get("highs", {})
+
+
+async def async_save_daily(
+    hass: HomeAssistant, entry_id: str, days: list[dict[str, Any]], highs: dict[str, float]
+) -> None:
+    await _async_write_json(
+        hass,
+        _get_entry_file_path(hass, entry_id, f"daily_{entry_id}.json"),
+        {"version": 1, "days": days, "highs": highs},
+    )
+
+
+async def async_load_recoveries(hass: HomeAssistant, entry_id: str) -> list[dict[str, Any]]:
+    data = await _async_read_json(hass, _get_entry_file_path(hass, entry_id, f"recoveries_{entry_id}.json"), {})
+    return data.get("runs", []) if isinstance(data, dict) else []
+
+
+async def async_save_recoveries(hass: HomeAssistant, entry_id: str, runs: list[dict[str, Any]]) -> None:
+    await _async_write_json(
+        hass, _get_entry_file_path(hass, entry_id, f"recoveries_{entry_id}.json"), {"version": 1, "runs": runs}
+    )

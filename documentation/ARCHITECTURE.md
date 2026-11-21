@@ -11,6 +11,7 @@ The integration is built in layers. Each layer has one job and a validated outpu
  Layer 2   Learning              segments -> physics heating model (+ backtest)
  Layer 3   Exposure              model -> HA sensors + persisted JSON
  Layer 4   Smart cooling         model + forecast -> recommended cooling setpoint
+ Layer 5   Diagnostics           segments -> daily record -> fingerprint, unusual days; heat-up log
 ```
 
 ## Layer 0 — Configuration
@@ -67,6 +68,19 @@ Learned values are exposed as standard HA sensors (see the README for the full l
 ## Layer 4 — Smart cooling
 
 Pure decision logic (`guidance.py`, `smart_control.py`) turns the model, the current conditions and the forecast into a recommended cooling setpoint and a human-readable strategy. See [SMART_COOLING.md](SMART_COOLING.md).
+
+## Layer 5 — Diagnostics
+
+`diagnostics.py` (pure functions) watches the house itself, not the model.
+
+- **Daily record.** Each update splits the segment store at local midnight. For each complete past day with ≥ 85% of it covered by segments: heating minutes, the duration-weighted mean outdoor temperature, and heating degree days `HDD = max(0, 65 − mean outdoor)`. Merged by date into `daily_<entry>.json`, which is never pruned, so it outlives the 400-day segment retention.
+- **Fingerprint.** Least squares `heat_min = intercept + slope·HDD` over days with HDD ≥ 3 (≥ 10 days needed). The slope (min/°F·d) is fitted on all days, on the last 60 days, and per heating season (July–June); season-to-season drift is the signal. The zero crossing gives the balance point.
+- **Unusual days.** |residual| > max(3σ, 30 min), with σ = 1.4826·MAD of the residuals, so a few odd days don't hide each other.
+- **Heat-up log.** The comfort package fires `ihvac_recovery_measured` for every measured morning heat-up. The integration appends it to `recoveries_<entry>.json` and reports the mean signed and absolute error over the last 14 runs. Verdict `runs_late`/`runs_early` once ≥ 5 runs and |bias| > max(5 min, 15% of the predicted time).
+
+- **Warm days.** Each day's indoor peak (max of segment end-points) is paired with the outdoor high (max of the outdoor history; backfilled from the recorder once). Least squares `peak = a + b·high` over the last 60 days without AC, so it tracks the season. A walk-forward test on the 2026-11 history gave 1.2°F typical error and no bias; adding the daily max UV index did not improve it (it barely varies in autumn), so sunshine gates the ease-off through the forecast condition instead of entering the fit. The comfort package turns the predicted peak into a lower morning target and tops up when the day doesn't deliver.
+
+HDD assumes a steady setpoint. The calculated night setback and manual changes add scatter, which is why one day off the line is a hint and a seasonal drift in the slope is the finding.
 
 ## Design principles
 
