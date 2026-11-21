@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 import homeassistant.util.dt as dt_util
 
@@ -38,7 +38,12 @@ from .storage import (
     async_load_checkpoint,
     async_delete_checkpoint,
     async_archive_entry_files,
+    async_load_daily,
+    async_save_daily,
+    async_load_recoveries,
+    async_save_recoveries,
 )
+from . import diagnostics
 from .models import ThermalSegment, ThermalModel
 
 _LOGGER = logging.getLogger(__name__)
@@ -95,6 +100,14 @@ class IntelligentHVACCoordinator(DataUpdateCoordinator):
         self.existing_model: ThermalModel | None = None
         self._checkpoint_loaded = False  # Track if we've attempted to load checkpoint
         self.first_data_timestamp: datetime | None = None  # Track when data collection started
+
+        # Diagnostics: durable daily heating record and warm-up log.
+        self.daily_days: list[dict[str, Any]] = []
+        self.daily_highs: dict[str, float] = {}
+        self.recoveries: list[dict[str, Any]] = []
+        self.diagnostics: dict[str, Any] = {}
+        self.recovery_bias: dict[str, Any] = diagnostics.recovery_bias([])
+        self._diagnostics_loaded = False
         
         _LOGGER.info(
             "Initialized coordinator: climate=%s, indoor=%s, outdoor=%s, days=%d, interval=%d min",
@@ -232,6 +245,37 @@ class IntelligentHVACCoordinator(DataUpdateCoordinator):
 
         return None
     
+    async def _async_get_forecast_highs(self) -> dict[str, dict[str, Any]]:
+        """Daily forecast by local ISO date: {"high": °F, "condition": str, "uv_index": float}."""
+        weather_entity = (
+            self.outdoor_sensor
+            if self.outdoor_sensor and self.outdoor_sensor.startswith("weather.")
+            else "weather.home"
+        )
+        if self.hass.states.get(weather_entity) is None:
+            return {}
+        try:
+            response = await self.hass.services.async_call(
+                "weather", "get_forecasts", {"entity_id": weather_entity, "type": "daily"},
+                blocking=True, return_response=True,
+            )
+        except Exception as err:
+            _LOGGER.debug("No daily forecast from %s: %s", weather_entity, err)
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        tz = dt_util.get_default_time_zone()
+        for f in ((response or {}).get(weather_entity) or {}).get("forecast") or []:
+            when, temp = f.get("datetime"), f.get("temperature")
+            if when and isinstance(temp, (int, float)):
+                day = dt_util.parse_datetime(when) if isinstance(when, str) else when
+                if day is not None:
+                    out.setdefault(day.astimezone(tz).date().isoformat(), {
+                        "high": float(temp),
+                        "condition": f.get("condition"),
+                        "uv_index": f.get("uv_index"),
+                    })
+        return out
+
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch and process data."""
         _LOGGER.info("Starting data update cycle")
@@ -441,6 +485,8 @@ class IntelligentHVACCoordinator(DataUpdateCoordinator):
             
             if self.existing_model:
                 await async_save_model(self.hass, self.entry.entry_id, self.existing_model)
+
+            await self._async_update_diagnostics()
             
             # Save checkpoint after successful update
             now = dt_util.utcnow()
@@ -474,12 +520,78 @@ class IntelligentHVACCoordinator(DataUpdateCoordinator):
                 "segments": self.existing_segments,
                 "model": self.existing_model,
                 "forecast_high_temp": forecast_high_temp,
+                "diagnostics": self.diagnostics,
             }
             
         except Exception as err:
             _LOGGER.error("Error updating data: %s", err, exc_info=True)
             raise UpdateFailed(f"Error updating data: {err}") from err
     
+    async def _async_load_diagnostics(self) -> None:
+        if self._diagnostics_loaded:
+            return
+        self._diagnostics_loaded = True
+        self.daily_days, self.daily_highs = await async_load_daily(self.hass, self.entry.entry_id)
+        if len(self.daily_highs) < diagnostics.MIN_WARM_FIT_DAYS and self.outdoor_sensor:
+            # Backfill outdoor highs from the recorder (once; afterwards each
+            # update's fetch window keeps them current).
+            end = dt_util.utcnow()
+            hist = await async_get_history_for_entities(
+                self.hass, [self.outdoor_sensor], end - timedelta(days=max(int(self.training_days), 30)), end
+            )
+            tz = dt_util.get_default_time_zone()
+            fresh = await self.hass.async_add_executor_job(
+                diagnostics.daily_highs, hist.get(self.outdoor_sensor) or [], tz
+            )
+            self.daily_highs = diagnostics.merge_highs(self.daily_highs, fresh)
+            _LOGGER.info("Backfilled %d daily outdoor highs from the recorder", len(fresh))
+        self.recoveries = await async_load_recoveries(self.hass, self.entry.entry_id)
+        self.recovery_bias = diagnostics.recovery_bias(self.recoveries)
+
+    async def _async_update_diagnostics(self) -> None:
+        """Roll the segment store up into days, merge, refit the fingerprint."""
+        try:
+            await self._async_load_diagnostics()
+            tz = dt_util.get_default_time_zone()
+            today = dt_util.now().date()
+            segments = list(self.existing_segments)
+            outdoor_records = list(self.resampled_data.get(self.outdoor_sensor) or []) if self.outdoor_sensor else []
+            forecast = await self._async_get_forecast_highs()
+
+            def _compute() -> tuple[list[dict[str, Any]], dict[str, float], dict[str, Any]]:
+                fresh = diagnostics.daily_rollup(segments, tz, today)
+                days = diagnostics.merge_days(self.daily_days, fresh)
+                highs = diagnostics.merge_highs(self.daily_highs, diagnostics.daily_highs(outdoor_records, tz))
+                return days, highs, diagnostics.summarize(days, today, highs, forecast)
+
+            days, highs, summary = await self.hass.async_add_executor_job(_compute)
+            if days != self.daily_days or highs != self.daily_highs:
+                self.daily_days, self.daily_highs = days, highs
+                await async_save_daily(self.hass, self.entry.entry_id, days, highs)
+            self.diagnostics = summary
+        except Exception as err:  # diagnostics must never break learning
+            _LOGGER.error("Error updating diagnostics: %s", err, exc_info=True)
+
+    @callback
+    def async_start_recovery_log(self) -> Any:
+        """Log every measured morning heat-up (fired by the comfort package)."""
+
+        async def _on_measured(event: Event) -> None:
+            row = diagnostics.recovery_entry(dict(event.data), dt_util.now())
+            if row is None:  # reset events (factor: 1) carry no measurement
+                return
+            await self._async_load_diagnostics()
+            self.recoveries = diagnostics.append_recovery(self.recoveries, row)
+            self.recovery_bias = diagnostics.recovery_bias(self.recoveries)
+            await async_save_recoveries(self.hass, self.entry.entry_id, self.recoveries)
+            _LOGGER.info(
+                "Warm-up logged: predicted %.1f min, actual %.1f min (%s)",
+                row["predicted_min"], row["actual_min"], self.recovery_bias["verdict"],
+            )
+            self.async_update_listeners()
+
+        return self.hass.bus.async_listen(diagnostics.RECOVERY_EVENT, _on_measured)
+
     def _merge_segments(
         self,
         existing: list[ThermalSegment],

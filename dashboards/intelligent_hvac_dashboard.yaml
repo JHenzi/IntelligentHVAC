@@ -1,4 +1,4 @@
-# Intelligent HVAC dashboard — built-in cards only (no HACS cards needed).
+# Intelligent HVAC dashboard. Smart Recovery view: built-in cards only. Diagnostics view: two charts need apexcharts-card (HACS).
 # Requires the integration + packages/intelligent_hvac_comfort.yaml. See dashboards/README.md.
 #
 # Entity IDs assumed (find & replace if yours differ):
@@ -253,6 +253,16 @@ views:
         name: Never earlier than (min)
       - entity: input_number.recovery_time_buffer
         name: Extra buffer (min)
+      - type: section
+        label: Warm days
+      - entity: input_boolean.ihvac_warm_day_ease_off
+        name: Ease off on warm, sunny days
+      - entity: sensor.intelligent_hvac_morning_target
+        name: This morning's heat-up target
+      - entity: input_number.ihvac_warm_day_max_ease
+        name: Ease off at most (°F)
+      - entity: input_number.ihvac_warm_day_check_hours
+        name: Check it's warming after (h)
     - type: entities
       title: Setback
       show_header_toggle: false
@@ -401,3 +411,263 @@ views:
           name: AC, 75°F out
         - entity: sensor.intelligent_hvac_passive_gain_rate_at_75degf
           name: Coasting, 75°F out
+
+# ── Diagnostics view ─────────────────────────────────────────────────────────
+# The two scatter/compare charts use apexcharts-card (HACS). Everything else is
+# built-in; without apexcharts those two cards show an error and the rest works.
+- title: Diagnostics
+  path: diagnostics
+  icon: mdi:stethoscope
+  type: sections
+  max_columns: 3
+  badges:
+  - type: entity
+    entity: sensor.intelligent_hvac_heating_fingerprint
+    name: Fingerprint
+  - type: entity
+    entity: sensor.intelligent_hvac_heating_balance_point
+    name: Balance point
+  - type: entity
+    entity: sensor.intelligent_hvac_unusual_heating_days
+    name: Unusual days (30 d)
+  - type: entity
+    entity: sensor.intelligent_hvac_warm_up_prediction_bias
+    name: Warm-up bias
+  sections:
+
+  # ── 1. Runtime vs cold ────────────────────────────────────────────────────
+  - type: grid
+    column_span: 2
+    cards:
+    - type: heading
+      heading: Runtime vs cold
+      icon: mdi:fingerprint
+    - type: markdown
+      content: |-
+        {%- set e = 'sensor.intelligent_hvac_heating_fingerprint' -%}
+        {%- set s = states(e) -%}
+        {%- if s in ['unknown', 'unavailable'] -%}
+        Collecting days: {{ state_attr(e, 'days_recorded') or 0 }} recorded, 10 cold days (HDD ≥ 3) needed for a fit.
+        {%- else -%}
+        The house uses **{{ s }} minutes of heating per degree-day** (R² {{ state_attr(e, 'r2') }}, {{ state_attr(e, 'days') }} days).
+        Heating starts below about **{{ state_attr(e, 'balance_point_f') }}°F** outdoors.
+        Last 60 days: {{ states('sensor.intelligent_hvac_heating_fingerprint_60_days') }} min/°F·d.
+        {%- set seasons = state_attr(e, 'seasons') or {} %}
+        {%- if seasons | length > 1 %}
+
+        | Season | min/°F·d | R² | days |
+        |---|---|---|---|
+        {%- for k, v in seasons.items() %}
+        | {{ k }} | {{ v.slope }} | {{ v.r2 }} | {{ v.days }} |
+        {%- endfor %}
+        {%- endif %}
+        {%- endif %}
+    - type: custom:apexcharts-card
+      header:
+        show: true
+        title: Daily heating minutes vs heating degree days
+        show_states: false
+      graph_span: 400d
+      chart_type: line
+      apex_config:
+        chart: { height: 320, zoom: { enabled: false } }
+        xaxis:
+          type: numeric
+          tickAmount: 6
+          title: { text: Heating degree days (65°F − mean outdoor) }
+          labels: { formatter: "EVAL:(v) => Math.round(v)" }
+        yaxis:
+          - min: 0
+            title: { text: Heating minutes }
+            decimalsInFloat: 0
+        markers: { size: [5, 7, 0] }
+        legend: { show: true }
+        tooltip: { x: { formatter: "EVAL:(v) => v.toFixed(1) + ' HDD'" } }
+      series:
+      - entity: sensor.intelligent_hvac_heating_fingerprint
+        name: Day
+        type: line
+        stroke_width: 0
+        color: '#4f8ef7'
+        data_generator: |
+          return (entity.attributes.points || []).filter(p => !p.u).map(p => [p.x, p.y]);
+      - entity: sensor.intelligent_hvac_heating_fingerprint
+        name: Unusual day
+        type: line
+        stroke_width: 0
+        color: '#e5484d'
+        data_generator: |
+          return (entity.attributes.points || []).filter(p => p.u).map(p => [p.x, p.y]);
+      - entity: sensor.intelligent_hvac_heating_fingerprint
+        name: Fit
+        type: line
+        stroke_width: 2
+        color: '#a0a0a0'
+        data_generator: |
+          const a = entity.attributes.intercept_min, b = parseFloat(entity.state);
+          if (a == null || isNaN(b)) return [];
+          const xs = (entity.attributes.points || []).map(p => p.x);
+          const hi = Math.max(...xs, 1), lo = Math.max(0, -a / b);
+          return [[lo, 0], [hi, a + b * hi]];
+    - type: statistics-graph
+      title: Fingerprint over time
+      chart_type: line
+      period: week
+      days_to_show: 730
+      stat_types: [mean]
+      entities:
+      - entity: sensor.intelligent_hvac_heating_fingerprint
+        name: All days
+      - entity: sensor.intelligent_hvac_heating_fingerprint_60_days
+        name: Last 60 days
+
+  # ── 2. Yesterday & unusual days ───────────────────────────────────────────
+  - type: grid
+    cards:
+    - type: heading
+      heading: Yesterday
+      icon: mdi:calendar-today
+    - type: tile
+      entity: sensor.intelligent_hvac_heating_minutes_yesterday
+      name: Heating
+    - type: tile
+      entity: sensor.intelligent_hvac_heating_expected_minutes_yesterday
+      name: Expected
+    - type: tile
+      entity: sensor.intelligent_hvac_heating_degree_days_yesterday
+      name: Degree days
+    - type: tile
+      entity: sensor.intelligent_hvac_heating_deviation_yesterday
+      name: Off the line
+    - type: heading
+      heading: Unusual days
+      icon: mdi:alert-circle-outline
+    - type: markdown
+      content: |-
+        {%- set d = state_attr('sensor.intelligent_hvac_unusual_heating_days', 'days') or [] -%}
+        {%- if not d -%}
+        Nothing unusual in the last 30 days.
+        {%- else -%}
+        | Day | Out °F | Heat | Expected | |
+        |---|---|---|---|---|
+        {%- for x in d | reverse %}
+        | {{ as_datetime(x.day).strftime('%a %b %-d') }} | {{ x.mean_outdoor | round(0) }} | {{ x.heat_min | round(0) }} | {{ x.expected_min | round(0) }} | {{ '🔥 more (door open? furnace struggling?)' if x.direction == 'more_heat' else '❄️ less (heat off? away?)' }} |
+        {%- endfor %}
+        {%- endif %}
+    - type: history-graph
+      title: Heating minutes, actual vs expected
+      hours_to_show: 720
+      entities:
+      - entity: sensor.intelligent_hvac_heating_minutes_yesterday
+        name: Actual
+      - entity: sensor.intelligent_hvac_heating_expected_minutes_yesterday
+        name: Expected
+
+  # ── 3. Warm days ──────────────────────────────────────────────────────────
+  - type: grid
+    cards:
+    - type: heading
+      heading: Warm days
+      icon: mdi:weather-sunny
+    - type: markdown
+      content: |-
+        {%- set e = 'sensor.intelligent_hvac_expected_indoor_peak' -%}
+        {%- set mt = states('sensor.intelligent_hvac_morning_target') -%}
+        {%- set full = states('input_number.target_temperature') -%}
+        {%- if states(e) in ['unknown', 'unavailable'] -%}
+        Learning how warm the house gets on its own (8 days with an outdoor high needed).
+        {%- else -%}
+        Forecast {{ state_attr(e, 'forecast_high_f') | round(0) }}°F, {{ state_attr(e, 'condition') or 'unknown sky' }}:
+        the house should reach about **{{ states(e) }}°F** on its own (± {{ state_attr(e, 'error_f') }}°F).
+        Tomorrow: {{ state_attr(e, 'tomorrow_forecast_high_f') | round(0) }}°F {{ state_attr(e, 'tomorrow_condition') }}, ≈ {{ state_attr(e, 'tomorrow_indoor_peak_f') }}°F indoors.
+
+        {% if not is_state('input_boolean.ihvac_warm_day_ease_off', 'on') -%}
+        Ease-off is **off**: mornings heat to {{ full }}°F.
+        {%- elif mt | float(0) < full | float(0) -%}
+        Morning heat-up ({{ state_attr('sensor.intelligent_hvac_morning_target', 'for_day') }}) aims for **{{ mt }}°F** instead of {{ full }}°F, and tops up if the day doesn't warm the house.
+        {%- else -%}
+        Morning heat-up aims for the full {{ full }}°F.
+        {%- endif %}
+
+        Learned: peak ≈ {{ state_attr(e, 'intercept') }} + {{ state_attr(e, 'slope') }} × outdoor high (R² {{ state_attr(e, 'r2') }}, {{ state_attr(e, 'days') }} days).
+        {%- endif %}
+    - type: tile
+      entity: sensor.intelligent_hvac_indoor_peak_yesterday
+      name: Peak yesterday
+    - type: tile
+      entity: sensor.intelligent_hvac_indoor_peak_yesterday_predicted
+      name: Predicted
+    - type: history-graph
+      title: Indoor peak, actual vs predicted
+      hours_to_show: 720
+      entities:
+      - entity: sensor.intelligent_hvac_indoor_peak_yesterday
+        name: Actual
+      - entity: sensor.intelligent_hvac_indoor_peak_yesterday_predicted
+        name: Predicted
+      - entity: sensor.intelligent_hvac_morning_target
+        name: Morning target
+
+  # ── 4. Warm-up accuracy ───────────────────────────────────────────────────
+  - type: grid
+    cards:
+    - type: heading
+      heading: Predicted vs actual warm-up
+      icon: mdi:timer-check-outline
+    - type: markdown
+      content: |-
+        {%- set e = 'sensor.intelligent_hvac_warm_up_prediction_bias' -%}
+        {%- set v = state_attr(e, 'verdict') -%}
+        {%- set n = state_attr(e, 'runs') or 0 -%}
+        {%- if n == 0 -%}
+        No measured heat-ups yet. Each morning heat-up of 3°F or more is logged here.
+        {%- else -%}
+        {%- set msg = {'on_track': '✅ On track', 'runs_late': '⚠️ Heat-ups take longer than predicted: the start is too late', 'runs_early': '⚠️ Heat-ups are faster than predicted: the start is too early', 'learning': '⏳ Learning (5 runs needed)'} -%}
+        **{{ msg.get(v, v) }}**. Over the last {{ n }} runs heat-ups averaged
+        {{ states(e) }} min {{ 'longer' if states(e) | float(0) >= 0 else 'shorter' }} than predicted,
+        typically off by {{ states('sensor.intelligent_hvac_warm_up_prediction_error') }} min.
+        {%- endif %}
+    - type: custom:apexcharts-card
+      header:
+        show: true
+        title: Each heat-up, predicted vs actual
+        show_states: false
+      graph_span: 30d
+      apex_config:
+        chart: { height: 260 }
+        markers: { size: 5 }
+        yaxis: [{ min: 0, title: { text: minutes }, decimalsInFloat: 0 }]
+      series:
+      - entity: sensor.intelligent_hvac_warm_up_prediction_bias
+        name: Predicted
+        stroke_width: 0
+        color: '#a0a0a0'
+        data_generator: |
+          return (entity.attributes.log || []).map(r => [new Date(r.ts).getTime(), r.predicted_min]);
+      - entity: sensor.intelligent_hvac_warm_up_prediction_bias
+        name: Actual
+        stroke_width: 0
+        color: '#f7a64f'
+        data_generator: |
+          return (entity.attributes.log || []).map(r => [new Date(r.ts).getTime(), r.actual_min]);
+    - type: markdown
+      content: |-
+        {%- set log = state_attr('sensor.intelligent_hvac_warm_up_prediction_bias', 'log') or [] -%}
+        {%- if log -%}
+        | Morning | Out °F | Predicted | Actual | Off by |
+        |---|---|---|---|---|
+        {%- for r in (log | reverse | list)[:10] %}
+        | {{ as_datetime(r.ts) | as_local | as_timestamp | timestamp_custom('%a %b %-d %H:%M') }} | {{ r.outdoor_f if r.outdoor_f is defined else '' }} | {{ r.predicted_min | round(0) }} | {{ r.actual_min | round(0) }} | {{ '%+d' | format(r.error_min | round(0) | int) }} |
+        {%- endfor %}
+        {%- endif %}
+    - type: statistics-graph
+      title: Warm-up error over time
+      chart_type: line
+      period: day
+      days_to_show: 120
+      stat_types: [mean]
+      entities:
+      - entity: sensor.intelligent_hvac_warm_up_last_error
+        name: Each run
+      - entity: sensor.intelligent_hvac_warm_up_prediction_bias
+        name: Bias (recent runs)

@@ -157,6 +157,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator = IntelligentHVACCoordinator(hass, entry)
         hass.data[DOMAIN][entry.entry_id] = {"coordinator": coordinator}
 
+        entry.async_on_unload(coordinator.async_start_recovery_log())
         await coordinator.async_config_entry_first_refresh()
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         entry.async_on_unload(entry.add_update_listener(async_update_options))
