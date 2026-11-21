@@ -50,7 +50,32 @@ input_datetime:
     has_time: true
     icon: mdi:timer-play-outline
 
+input_boolean:
+  # Warm days: heat to a lower morning target when the learned model says sun
+  # and mild air will carry the house past the target anyway, then top up if
+  # the day doesn't deliver. See sensor.intelligent_hvac_morning_target.
+  ihvac_warm_day_ease_off:
+    name: Ease Off on Warm Days
+    icon: mdi:weather-sunny
+
 input_number:
+  # Most the morning target may be lowered on a warm day.
+  ihvac_warm_day_max_ease:
+    name: Warm-day Max Ease-off
+    min: 0
+    max: 5
+    step: 0.5
+    unit_of_measurement: "°F"
+    icon: mdi:thermometer-minus
+  # Hours after wake-up to check the day is really warming the house
+  # (never before sunrise + 3 h, so dark winter mornings get time to warm).
+  ihvac_warm_day_check_hours:
+    name: Warm-day Check After Wake
+    min: 1
+    max: 5
+    step: 0.5
+    unit_of_measurement: h
+    icon: mdi:clock-check-outline
   target_temperature:
     name: Target Temperature
     min: 60
@@ -180,6 +205,41 @@ sensor:
 
 template:
   - sensor:
+      # The temperature the morning heat-up aims for. Normally the target. On a
+      # warm, sunny day (with "Ease Off on Warm Days" on) it is lowered by half
+      # the predicted overshoot of the afternoon indoor peak (less the model's
+      # error), capped by "Warm-day Max Ease-off", never below tonight's setback.
+      # Covers today's morning until the top-up window closes, then tomorrow's.
+      - name: Intelligent HVAC Morning Target
+        unique_id: ihvac_morning_target
+        unit_of_measurement: "°F"
+        state_class: measurement
+        icon: mdi:sun-thermometer
+        state: >-
+          {% set target = states('input_number.target_temperature') | float(70) %}
+          {% set w = states('input_datetime.target_wake_up_time') %}
+          {% set wake = today_at(w if w not in ['unknown', 'unavailable'] else '07:00:00') %}
+          {% set hrs = states('input_number.ihvac_warm_day_check_hours') | float(3) %}
+          {% set today = now() < wake + timedelta(hours=hrs + 2) %}
+          {% set e = 'sensor.intelligent_hvac_expected_indoor_peak' %}
+          {% set peak = states(e) | float(none) if today else state_attr(e, 'tomorrow_indoor_peak_f') %}
+          {% set sunny = state_attr(e, 'sunny' if today else 'tomorrow_sunny') %}
+          {% set err = state_attr(e, 'error_f') | float(2) %}
+          {% set setback = states('sensor.intelligent_hvac_night_setback')
+                           | float(states('input_number.nighttime_setback_temperature') | float(65)) %}
+          {% set max_ease = states('input_number.ihvac_warm_day_max_ease') | float(2) %}
+          {% if is_state('input_boolean.ihvac_warm_day_ease_off', 'on') and peak is number and sunny != false %}
+            {% set ease = [[(peak - err - target) / 2, 0] | max, max_ease] | min %}
+            {% set ease = (ease * 2) | round(0, 'floor') / 2 %}
+            {{ [target - ease, [setback, target] | min] | max }}
+          {% else %}{{ target }}{% endif %}
+        attributes:
+          full_target: "{{ states('input_number.target_temperature') | float(70) }}"
+          for_day: >-
+            {% set w = states('input_datetime.target_wake_up_time') %}
+            {% set wake = today_at(w if w not in ['unknown', 'unavailable'] else '07:00:00') %}
+            {% set hrs = states('input_number.ihvac_warm_day_check_hours') | float(3) %}
+            {{ (now() if now() < wake + timedelta(hours=hrs + 2) else now() + timedelta(days=1)).date().isoformat() }}
       - name: Outdoor Temperature Most Recent
         unique_id: outdoor_temperature_most_recent
         unit_of_measurement: "°F"
@@ -363,7 +423,7 @@ script:
     sequence:
       - variables:
           commit_min: 15
-          target: "{{ states('input_number.target_temperature') | float(70) }}"
+          target: "{{ states('sensor.intelligent_hvac_morning_target') | float(states('input_number.target_temperature') | float(70)) }}"
           sp_raw: "{{ state_attr('climate.thermostat', 'temperature') }}"
           tonight_setback: >-
             {{ states('sensor.intelligent_hvac_night_setback')
@@ -592,6 +652,7 @@ automation:
           - sensor.intelligent_hvac_time_to_target_5degf_heat
           - sensor.intelligent_hvac_night_setback
           - input_number.target_temperature
+          - sensor.intelligent_hvac_morning_target
           - input_datetime.target_wake_up_time
           - input_datetime.setback_time
       - trigger: state
@@ -624,7 +685,7 @@ automation:
       - action: climate.set_temperature
         target: { entity_id: climate.thermostat }
         data:
-          temperature: "{{ states('input_number.target_temperature') | float(70) }}"
+          temperature: "{{ states('sensor.intelligent_hvac_morning_target') | float(states('input_number.target_temperature') | float(70)) }}"
     mode: single
 
   # Safety net: if the smart start time has passed (plus a few minutes' grace)
@@ -662,20 +723,85 @@ automation:
       - condition: template
         value_template: >-
           {{ state_attr('climate.thermostat', 'temperature') | float(0)
-             < states('input_number.target_temperature') | float(70) - 0.5 }}
+             < states('sensor.intelligent_hvac_morning_target') | float(states('input_number.target_temperature') | float(70)) - 0.5 }}
     actions:
       - action: climate.set_temperature
         target: { entity_id: climate.thermostat }
         data:
-          temperature: "{{ states('input_number.target_temperature') | float(70) }}"
+          temperature: "{{ states('sensor.intelligent_hvac_morning_target') | float(states('input_number.target_temperature') | float(70)) }}"
       - action: persistent_notification.create
         data:
           notification_id: ihvac_fallback_heat_up
           title: Intelligent HVAC fallback heat-up
           message: >-
             Smart recovery hadn't raised the setpoint by {{ now().strftime('%H:%M') }},
-            so the fallback did (target {{ states('input_number.target_temperature') }}°F).
+            so the fallback did (target {{ states('sensor.intelligent_hvac_morning_target') }}°F).
             Smart start time was {{ states('input_datetime.smart_recovery_start_time') }}.
+    mode: single
+
+  # Warm days: the morning heat-up aimed lower (sensor.intelligent_hvac_morning_target).
+  # From wake-up until the check time + 2 h, raise to the full target when
+  #  - the forecast no longer predicts enough sunny warmth (or ease-off was switched off),
+  #  - the house can't hold the eased setpoint, or
+  #  - at the check time the house still isn't warming on its own. The check is
+  #    the later of wake-up + "Warm-day Check After Wake" and sunrise + 3 h, so
+  #    it follows the sun through the seasons and across daylight-saving changes.
+  - id: ihvac_warm_day_top_up
+    alias: "Smart Recovery: Warm-day Top-up"
+    description: >-
+      After an eased warm-day heat-up, top up to the full target if the day
+      isn't warming the house as predicted.
+    triggers:
+      - trigger: time_pattern
+        minutes: /15
+      - trigger: state
+        entity_id:
+          - sensor.intelligent_hvac_morning_target
+          - input_boolean.ihvac_warm_day_ease_off
+    conditions:
+      - condition: state
+        entity_id: climate.thermostat
+        state: heat
+    actions:
+      - variables:
+          full: "{{ states('input_number.target_temperature') | float(70) }}"
+          eased: "{{ states('sensor.intelligent_hvac_morning_target') | float(states('input_number.target_temperature') | float(70)) }}"
+          sp: "{{ state_attr('climate.thermostat', 'temperature') | float(0) }}"
+          indoor: "{{ states('sensor.intelligent_hvac_learned_indoor_temperature') | float(sp) }}"
+          trend: "{{ states('sensor.intelligent_hvac_indoor_trend') | float(0) }}"
+          wake: >-
+            {% set w = states('input_datetime.target_wake_up_time') %}
+            {{ today_at(w if w not in ['unknown', 'unavailable'] else '07:00:00').isoformat() }}
+          # Today's sunrise (sun.sun only knows the next one).
+          sunrise: >-
+            {% set r = state_attr('sun.sun', 'next_rising') %}
+            {% if r %}{% set r = as_local(as_datetime(r)) %}
+              {{ (r - timedelta(days=1) if r.date() > now().date() else r).isoformat() }}
+            {% else %}{{ today_at('07:00').isoformat() }}{% endif %}
+          check_at: >-
+            {% set a = as_datetime(wake) + timedelta(hours=states('input_number.ihvac_warm_day_check_hours') | float(3)) %}
+            {% set b = as_datetime(sunrise) + timedelta(hours=3) %}
+            {{ [a, b] | max }}
+          reason: >-
+            {% if eased >= full - 0.25 %}forecast no longer warm and sunny enough
+            {% elif indoor < sp - 0.75 %}house can't hold {{ sp }}°F
+            {% elif now() >= as_datetime(check_at) and trend <= 0.1 and indoor < sp + 0.5 %}house not warming by {{ as_datetime(check_at).strftime('%H:%M') }}
+            {% endif %}
+      # Only an eased morning: inside the window, setpoint at the eased level
+      # (not turned down by hand), still below the full target.
+      - condition: template
+        value_template: >-
+          {{ as_datetime(wake) <= now() <= as_datetime(check_at) + timedelta(hours=2)
+             and sp < full - 0.25 and sp >= [eased, full - 5] | min - 0.25
+             and reason | trim != '' }}
+      - action: climate.set_temperature
+        target: { entity_id: climate.thermostat }
+        data: { temperature: "{{ full }}" }
+      - action: logbook.log
+        data:
+          name: Intelligent HVAC
+          message: "Warm-day top-up to {{ full }}°F: {{ reason | trim }}"
+          entity_id: climate.thermostat
     mode: single
 
   # Teach the model: time every morning heat-up and compare it with the
@@ -695,7 +821,7 @@ automation:
       - trigger: template
         value_template: >-
           {{ states('sensor.intelligent_hvac_learned_indoor_temperature') | float(0)
-             >= states('input_number.target_temperature') | float(70) - 0.5 }}
+             >= states('sensor.intelligent_hvac_morning_target') | float(states('input_number.target_temperature') | float(70)) - 0.5 }}
         id: reached
     conditions:
       - condition: state
@@ -703,7 +829,7 @@ automation:
         state: heat
     actions:
       - variables:
-          target: "{{ states('input_number.target_temperature') | float(70) }}"
+          target: "{{ states('sensor.intelligent_hvac_morning_target') | float(states('input_number.target_temperature') | float(70)) }}"
           sp: "{{ state_attr('climate.thermostat', 'temperature') | float(0) }}"
           indoor: >-
             {{ states('sensor.intelligent_hvac_learned_indoor_temperature')
@@ -765,6 +891,7 @@ automation:
                       actual_min: "{{ actual }}"
                       predicted_min: "{{ predicted }}"
                       outdoor_f: "{{ outdoor }}"
+                      target_f: "{{ target }}"
               - action: input_number.set_value
                 target: { entity_id: input_number.ihvac_recovery_predicted }
                 data: { value: 0 }

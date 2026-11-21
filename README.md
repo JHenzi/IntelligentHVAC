@@ -119,6 +119,25 @@ More in [dashboards/README.md](dashboards/README.md).
 | Recommended Cooling Setpoint | What Intelligent HVAC wants the thermostat at |
 | Cooling Strategy | *Why* — see below |
 
+### 🩺 Diagnostics
+
+Each value is its own sensor with long-term statistics, so you can graph it over months and seasons.
+
+| Sensor | Tells you |
+|---|---|
+| Heating Fingerprint | Minutes of heating per heating degree day (65°F base). Your house's fingerprint: if it creeps up from one season to the next, something got worse (a failing seal, a dirty filter) |
+| Heating Fingerprint 60 Days | The same, fitted on the last 60 days only |
+| Heating Fingerprint Fit | How straight the line is (R², %) |
+| Heating Baseline / Balance Point | Where the line crosses zero: the outdoor temperature at which the house stops needing heat |
+| Heating Minutes / Degree Days / Expected Minutes / Deviation Yesterday | Yesterday against the line |
+| Unusual Heating Days | Days in the last 30 far off the line (door left open, furnace struggling, heat off) |
+| Warm-up Last Predicted / Actual / Error | The most recent measured morning heat-up |
+| Expected Indoor Peak | How warm the house should get on its own today, from the forecast (tomorrow's in attributes) |
+| Indoor Peak Yesterday / Predicted | Yesterday's indoor peak and what the model predicted |
+| Warm-up Prediction Bias / Error | Mean signed and absolute error over the last 14 heat-ups, with a verdict (`on_track`, `runs_late`, `runs_early`) |
+
+The daily record (`daily_<entry>.json`) and the heat-up log (`recoveries_<entry>.json`) are kept for years, independent of the 400-day segment store. The dashboard's *Diagnostics* view plots them (the two charts need [apexcharts-card](https://github.com/RomRider/apexcharts-card)).
+
 ## 🧊 Smart cooling (summer)
 
 `sensor.intelligent_hvac_cooling_strategy` explains each decision in plain terms:
@@ -177,6 +196,16 @@ During the day the start time is planned for the coming night from the forecast 
 5. **Never skip a morning.** If a colder-than-expected night means the start is already due, it heats immediately; a fallback automation backs it up if Home Assistant was down at the start minute.
 
 Wake-up time, target, buffer and the maximum lead are all on the dashboard's Settings view.
+
+## ☀️ Warm days
+
+Some days the sun and mild air carry the house well past the target by afternoon (on a 68°F day this house reaches ~76°F with the furnace off). Heating to the full target at dawn is then partly wasted, so with **Ease Off on Warm Days** on:
+
+1. **It learns how warm the house gets on its own:** each day's indoor peak against the outdoor high, over the last 60 days so it follows the season's sun angle (`sensor.intelligent_hvac_expected_indoor_peak`, ± its typical error).
+2. **On a warm, sunny forecast the morning target is lowered** by half the predicted overshoot, less the model's error, capped by *Warm-day Max Ease-off* and never below tonight's setback (`sensor.intelligent_hvac_morning_target`). Cloudy or rainy forecasts never ease off. The smart start, fallback and heat-up measurement all use this target.
+3. **It keeps checking through the morning** and tops up to the full target if the forecast changes, if the house can't hold the lower setpoint, or if it still isn't warming by the check time (wake-up + *Warm-day Check After Wake*, never before sunrise + 3 h, so it follows the sun across seasons and daylight-saving changes).
+
+Yesterday's actual and predicted peaks are sensors too, so you can watch the prediction earn its keep.
 
 ## 🌙 Night setback
 

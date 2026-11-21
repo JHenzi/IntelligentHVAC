@@ -30,6 +30,10 @@ Recorder history is usually short (21 days on that install, and climate entities
 ## P1: closed loop
 
 - [x] Morning outcome tracking: each heat-up is timed against the prediction; the running actual/predicted ratio (`sensor.intelligent_hvac_recovery_speed_factor`) scales the start time and the setback.
+- [x] Diagnostics: heating fingerprint (minutes per degree-day, per season), unusual days, heat-up prediction log and bias, all as sensors with long-term statistics.
+- [x] Warm days: learn the house's afternoon peak vs the outdoor high; lower the morning target on warm, sunny days and top up if the day doesn't deliver.
+- [ ] Revisit a sun term (UV index / cloud cover) in the warm-day fit once there's a spring of data with real variation.
+- [ ] Alert when the fingerprint of a season is clearly above the last one, or the heat-up verdict stays `runs_late` for a week.
 - [x] Calculated night setback: as deep as the furnace can recover from within a time limit at the forecast low (`sensor.intelligent_hvac_night_setback`), replacing the fixed cold tiers.
 - [x] Learning runs in the executor; linear-time segmentation — #6.
 - [ ] Indoor sensor weights honoured; option to exclude the thermostat's own reading.
